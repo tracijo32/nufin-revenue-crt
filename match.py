@@ -86,12 +86,14 @@ def match_blackthorn_to_stripe_charges(
 
     matched_df = pd.merge(
         matched_df,
-        invoice_df[['invoice_id','transaction_id']],
+        invoice_df[['invoice_id','transaction_id','amount','fees','gateway','event_name']]\
+            .rename(columns={'amount':'transaction_amount','fees':'transaction_fees'}),
         on='transaction_id',
     )
     matched_df = pd.merge(
         matched_df,
-        item_df[['invoice_id','chart_string','item_name','total']],
+        item_df[['invoice_id','chart_string','item_name','total']]\
+            .rename(columns={'total':'item_amount'}),
         on='invoice_id',
         how='inner'
     )
@@ -130,8 +132,8 @@ def match_memberships_to_stripe_charges(
     """
     to_match_df = stripe_df.loc[
         stripe_df['transaction_id'].isin(unmatched_transactions),
-        ['transaction_id','customer_name','transaction_timestamp','amount','wire_date']
-    ]
+        ['transaction_id','customer_name','transaction_timestamp','amount','fees','wire_date','gateway']
+    ].rename(columns={'amount':'transaction_amount','fees':'transaction_fees'})
 
     to_match_df['clean_name'] = clean_name_column(to_match_df['customer_name'])
 
@@ -149,14 +151,14 @@ def match_memberships_to_stripe_charges(
 
     comp = pd.merge(
         to_match_df,
-        mbr_df[['donor_name','donor_id','amount','payment_date']],
+        mbr_df[['donor_name','donor_id','amount','payment_date']]\
+            .rename(columns={'amount':'item_amount'}),
         on='donor_id',
-        suffixes=('_str','_mbr')
     ).drop(columns=['clean_name','fuzzy_match_results'])
     comp['transaction_date'] = comp['transaction_timestamp'].dt.date
 
     comp['match_date'] = comp['payment_date'].eq(comp['transaction_date'])
-    comp['match_amount'] = comp['amount_str'].eq(comp['amount_mbr'])
+    comp['match_amount'] = comp['transaction_amount'].eq(comp['item_amount'])
 
     final_match = comp.loc[comp.loc[
             comp['match_date'] & comp['match_amount']
@@ -170,12 +172,76 @@ def match_memberships_to_stripe_charges(
     assert final_match['match_rank'].eq(1).all()
 
     df = pd.merge(
-        final_match[['transaction_id','wire_date','donor_id','payment_date']],
-        mbr_df[['donor_id','donor_name','amount','chart_string','payment_date','item_name']],
+        final_match[['transaction_id','wire_date','donor_id','gateway',
+            'payment_date','transaction_amount','transaction_fees']],
+        mbr_df[['donor_id','donor_name','amount',
+                'chart_string','payment_date','item_name']]\
+                    .rename(columns={'amount':'item_amount'}),
         on=['donor_id','payment_date'],
         how='inner'
     )
 
     ## return the transaction ID, donor ID, and payment date so we can link the transactions
     ## to the correct membership purchase
+    return df
+
+def match_all_charges(
+    stripe_df: pd.DataFrame, 
+    invoice_df: pd.DataFrame, 
+    item_df: pd.DataFrame, 
+    mbr_df: pd.DataFram
+):
+    
+    bt_match_df, unmatched_transactions = match_blackthorn_to_stripe_charges(stripe_df, invoice_df, item_df)
+    mbr_match_df = match_memberships_to_stripe_charges(stripe_df, mbr_df, unmatched_transactions)
+
+    cols = ['transaction_id','gateway','wire_date','item_name','event_name',
+        'chart_string','item_amount','transaction_fees','transaction_amount']
+
+    all_match_df = pd.concat([
+        bt_match_df.reindex(columns=cols),
+        mbr_match_df.reindex(columns=cols).assign(event_name='Memberships')
+    ]).reset_index(drop=True)
+
+    return all_match_df
+
+def get_crt_lines_transaction_fees(
+    all_match_df: pd.DataFrame,
+    stripe_fee_chart_string: str
+):
+    df = all_match_df[['transaction_id','wire_date','event_name','gateway','transaction_fees']].drop_duplicates()
+
+    assert not df['transaction_id'].duplicated().any()
+
+    fee_map = pd.read_csv('fee_map.csv',dtype=str)
+    df = pd.merge(
+        df,
+        fee_map,
+        on='event_name',
+        how='left'
+    )
+
+    df['fee_designation'] = df['fee_designation'].fillna(df['gateway'])
+
+    df = df.groupby(['gateway','wire_date','fee_designation'])['transaction_fees'].sum().reset_index()
+    df['amount'] = -df['transaction_fees'].abs()
+
+    df['chart_string'] = stripe_fee_chart_string
+    df['description'] = 'Stripe Fees - ' + df['fee_designation']
+
+    return df[['gateway','wire_date','chart_string','amount','description']]
+
+def get_crt_lines_usage_fees(
+    stripe_df: pd.DataFrame,
+    stripe_fee_chart_string: str
+):
+    df = stripe_df.loc[
+        stripe_df['type'].eq('stripe_fee')
+    ].groupby(['gateway','wire_date'])['amount'].sum()\
+        .reset_index()
+
+    df['amount'] = -df['amount'].abs()
+    df['chart_string'] = stripe_fee_chart_string
+    df['description'] = 'Stripe Fees - Usage'
+
     return df
