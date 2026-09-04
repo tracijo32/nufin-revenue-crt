@@ -13,10 +13,10 @@ def aggregate_blackthorn(
 
     df = pd.merge(
         matched_blackthorn_df[['transaction_id','wire_date',
-            'gateway','amount_stripe','fees_stripe']],
+            'gateway','amount_blackthorn','fees_blackthorn']],
         invoice_df[['transaction_id','invoice_id','event_name']],
         on='transaction_id'
-    )
+    ).rename(columns={'amount_blackthorn':'amount','fees_blackthorn':'fees'})
 
     fees = pd.merge(
         df,
@@ -28,8 +28,9 @@ def aggregate_blackthorn(
     fees['fee_bucket'] = fees['fee_bucket'].fillna(fees['gateway'])
     fees['chart_string'] = fees['chart_string'].fillna(default_fee_chart_string)
 
-    fees = fees.groupby(['gateway','wire_date','fee_bucket','chart_string'])['fees_stripe'].sum()\
-        .reset_index().rename(columns={'fees_stripe':'fees'})
+    fees = fees.groupby(['gateway','wire_date','fee_bucket','chart_string'])\
+        ['fees'].sum()\
+        .reset_index()
 
     df = pd.merge(
         df,
@@ -103,13 +104,3 @@ def aggregate_memberships(
 
     return gross, fees
 
-def aggregate_stripe_usage_fees(
-    stripe_df: pd.Dataframe,
-    stripe_fee_cs: str
-):
-    fees = stripe_df.loc[
-        stripe_df['type'].eq('Stripe Fee')
-    ].groupby(['gateway','wire_date'])['amount'].sum()\
-        .reset_index().rename(columns={'amount':'transaction_fees'})
-    fees['chart_string'] = stripe_fee_cs
-    return fees
