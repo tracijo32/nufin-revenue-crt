@@ -1,143 +1,115 @@
 import pandas as pd
 
-def get_crt_lines_charges(
-    all_match_df: pd.DataFrame,
-    chart_string_desc: pd.DataFrame
+def aggregate_blackthorn(
+    matched_blackthorn_df: pd.DataFrame,
+    invoice_df: pd.DataFrame,
+    item_df: pd.DataFrame,
+    li_ovrd: pd.DataFrame,
+    cs_ovrd: pd.DataFrame,
+    fb_ovrd: pd.DataFrame,
+    default_fee_chart_string: str = '110-1640610-78680',
+    set_discounts_to_zero=True
 ):
-    cs = all_match_df.loc[
-            all_match_df['chart_string'].notnull() &
-            all_match_df['item_amount'].fillna(0).ne(0),
-        ['gateway','chart_string','event_name','item_name']
-    ].drop_duplicates()
 
-    cs['cs'] = cs['chart_string'].str.split(',')
-    cs = cs.explode('cs')
-
-    cs['fund_code'] = cs['cs'].str.split('-').str[0]
-    assert cs['fund_code'].str.len().eq(3).all()
-    cs['department'] = cs['cs'].str.split('-').str[1]
-    assert cs['department'].str.len().eq(7).all()
-
-    cs['project'] = cs['cs'].str.split('-').str[2]
-    cs.loc[cs['project'].str.len().ne(8),'project'] = None
-
-    cs['activity'] = cs['project'].str.replace(r'\d+','01',regex=True)
-
-    general_no_proj = cs['fund_code'].eq('110') & cs['project'].isna()
-    rest_has_proj = cs['fund_code'].ne('110') & cs['project'].notna()
-    assert (general_no_proj | rest_has_proj).all()
-
-    cs['cf1'] = cs['cs'].str.split('-').str[-2]
-    cs.loc[cs['cf1'].str.len().ne(4),'cf1'] = None
-
-    cs['account'] = cs['cs'].str.split('-').str[-1]
-    cs.loc[cs['account'].str.len().ne(5),'account'] = None
-    
-    cs['account'] = cs['account'].fillna(
-            cs['gateway'].map(
-                {
-                    'ARD': '40756',
-                    'FSM': '40755'
-                }
-            )
-        )
-
-    cs['chart_string_full'] = cs[['fund_code','department','project','activity','cf1','account']].apply(
-        lambda x: "-".join(x.dropna().astype(str)),axis=1
-    )
-
-    assert cs.apply(lambda x: x['cs'] in x['chart_string_full'],axis=1).all()
-    cs['trunc_name'] = cs['event_name'].str.split(':').str[0].str.replace('.','')
-
-    grp = cs.groupby('chart_string_full').agg(
-        event_name = pd.NamedAgg(column='event_name', aggfunc='first'),
-        n_events = pd.NamedAgg(column='event_name', aggfunc='nunique'),
-        item_name = pd.NamedAgg(column='item_name', aggfunc='first'),
-        n_items = pd.NamedAgg(column='item_name', aggfunc='nunique'),
-        trunc_name = pd.NamedAgg(column='trunc_name', aggfunc='first'),
-        n_truncs = pd.NamedAgg(column='trunc_name', aggfunc='nunique')
-    )
-
-    grp = pd.merge(
-        grp,
-        chart_string_desc,
-        on='chart_string_full',
-        how='left'
-    )
-
-    ifill = grp['n_items'].eq(1) & grp['description'].isnull()
-    grp.loc[ifill,'description'] = grp.loc[ifill,'item_name']
-    tfill = grp['n_truncs'].eq(1) & grp['description'].isnull()
-    grp.loc[tfill,'description'] = grp.loc[tfill,'trunc_name']
-    efill = grp['n_events'].eq(1) & grp['description'].isnull()
-    grp.loc[efill,'description'] = grp.loc[efill,'event_name']
-
-    assert grp['description'].notnull().all()
-
-    cs = pd.merge(
-        cs,
-        grp[['chart_string_full','description']],
-        on='chart_string_full',
-        how='left'
-    )
-
-    assert cs.groupby('chart_string')['description'].nunique().eq(1).all()
-
-    cs = cs.sort_values(by='chart_string').groupby('chart_string')\
-        [['chart_string_full','description']].first().reset_index()
-
-    validated_df = pd.merge(
-        all_match_df,
-        cs,
-        on='chart_string',
-        how='left'
-    ).rename(columns={'chart_string':'original_chart_string'})\
-        .rename(columns={'chart_string_full':'chart_string'})
-
-    validated_df['chart_string'] = validated_df['chart_string'].fillna('unassigned')
-
-    df = validated_df.groupby(['gateway','wire_date','chart_string','description'])['item_amount'].sum()\
-        .reset_index().rename(columns={'item_amount':'amount'})
-
-    return df
-
-def get_crt_lines_transaction_fees(
-    all_match_df: pd.DataFrame,
-    stripe_fee_chart_string: str
-):
-    df = all_match_df[['transaction_id','wire_date','event_name','gateway','transaction_fees']].drop_duplicates()
-
-    assert not df['transaction_id'].duplicated().any()
-
-    fee_map = pd.read_csv('fee_map.csv',dtype=str)
     df = pd.merge(
+        matched_blackthorn_df[['transaction_id','wire_date',
+            'gateway','amount_stripe','fees_stripe']],
+        invoice_df[['transaction_id','invoice_id','event_name']],
+        on='transaction_id'
+    )
+
+    fees = pd.merge(
         df,
-        fee_map,
+        fb_ovrd,
         on='event_name',
         how='left'
     )
+    
+    fees['fee_bucket'] = fees['fee_bucket'].fillna(fees['gateway'])
+    fees['chart_string'] = fees['chart_string'].fillna(default_fee_chart_string)
 
-    df['fee_designation'] = df['fee_designation'].fillna(df['gateway'])
+    fees = fees.groupby(['gateway','wire_date','fee_bucket','chart_string'])['fees_stripe'].sum()\
+        .reset_index().rename(columns={'fees_stripe':'fees'})
 
-    df = df.groupby(['gateway','wire_date','fee_designation'])['transaction_fees'].sum().reset_index()
-    df['amount'] = -df['transaction_fees'].abs()
+    df = pd.merge(
+        df,
+        item_df,
+        on='invoice_id'
+    )
 
-    df['chart_string'] = stripe_fee_chart_string
-    df['description'] = 'Stripe Fees - ' + df['fee_designation']
+    df = pd.merge(
+        df,
+        li_ovrd,
+        on='item_id',
+        how='left',
+        suffixes=('_orig','_ovrd')
+    )
+    df['total_orig'] = df['total_orig'].fillna(0)
 
-    return df[['gateway','wire_date','chart_string','amount','description']]
+    if set_discounts_to_zero:
+        df.loc[df['total_orig'].lt(0) & df['total_ovrd'].isna(),'total_ovrd'] = 0
 
-def get_crt_lines_usage_fees(
-    stripe_df: pd.DataFrame,
-    stripe_fee_chart_string: str
+    df['total_to_use'] = df['total_ovrd'].fillna(df['total_orig'])
+
+    cs_ovrd_item = cs_ovrd.loc[
+        cs_ovrd['item_name'].notna(),
+        ['event_name','item_name','chart_string']
+    ]
+    cs_ovrd_event = cs_ovrd.loc[
+        cs_ovrd['item_name'].isna(),
+        ['event_name','chart_string']
+    ]
+
+    df = pd.merge(
+        df,
+        cs_ovrd_event,
+        on='event_name',
+        how='left',
+        suffixes=('','_ovrd_event')
+    )
+
+    df = pd.merge(
+        df,
+        cs_ovrd_item,
+        on=['event_name','item_name'],
+        how='left',
+        suffixes=('_orig','_ovrd_item')
+    )
+
+    df['chart_string_ovrd'] = df['chart_string_ovrd_item'].fillna(df['chart_string_ovrd_event'])
+    df['chart_string_to_use'] = df['chart_string_ovrd'].fillna(df['chart_string_orig'])
+
+    df = df.drop(columns=['chart_string_ovrd_item','chart_string_ovrd_event'])
+    df = df[df['total_to_use'].gt(0)]
+
+    gross = df.groupby(['gateway','wire_date','chart_string_to_use'])['total_to_use'].sum()\
+        .reset_index().rename(columns={'chart_string_to_use':'chart_string','total_to_use':'amount'})
+
+    return gross, fees
+
+def aggregate_memberships(
+    matched_memberships_df: pd.DataFrame,
+    default_fee_chart_string: str = '110-1640610-78680'
 ):
-    df = stripe_df.loc[
-        stripe_df['type'].eq('stripe_fee')
-    ].groupby(['gateway','wire_date'])['amount'].sum()\
+    gross = matched_memberships_df\
+        .groupby(['gateway','wire_date','chart_string'])['amount'].sum()\
         .reset_index()
 
-    df['amount'] = -df['amount'].abs()
-    df['chart_string'] = stripe_fee_chart_string
-    df['description'] = 'Stripe Fees - Usage'
+    fees = matched_memberships_df\
+        .groupby(['gateway','wire_date'])['fees'].sum()\
+        .reset_index()
+    fees['fee_bucket'] = fees['gateway']
+    fees['chart_string'] = default_fee_chart_string
 
-    return df
+    return gross, fees
+
+def aggregate_stripe_usage_fees(
+    stripe_df: pd.Dataframe,
+    stripe_fee_cs: str
+):
+    fees = stripe_df.loc[
+        stripe_df['type'].eq('Stripe Fee')
+    ].groupby(['gateway','wire_date'])['amount'].sum()\
+        .reset_index().rename(columns={'amount':'transaction_fees'})
+    fees['chart_string'] = stripe_fee_cs
+    return fees
