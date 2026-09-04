@@ -92,3 +92,134 @@ def match_stripe_to_memberships(
     ]
 
     return df
+
+def auto_assign_refunds(
+    stripe_df: pd.DataFrame,
+    invoice_df: pd.DataFrame,
+    item_df: pd.DataFrame,
+    cs_ovrd: pd.DataFrame
+):
+    refund_df = pd.merge(
+        stripe_df.loc[
+            stripe_df['type'].eq('Refund'),
+            ['gateway','transaction_id','wire_date','amount']
+        ],
+        invoice_df[['transaction_id','invoice_id','event_name']],
+        on=['transaction_id'],
+        how='left',
+        suffixes=('_stripe','_blackthorn'),
+        indicator=True
+    )
+
+    df = refund_df.loc[
+        refund_df['_merge'].eq('both'),
+    ].drop(columns=['_merge'])
+
+    df = pd.merge(
+        df,
+        item_df.loc[
+            item_df['total'].fillna(0).gt(0),
+            ['invoice_id','item_id','item_name','total','chart_string']
+        ],
+        on='invoice_id',
+        how='inner'
+    )
+
+    cs_ovrd_item = cs_ovrd.loc[
+        cs_ovrd['item_name'].notna(),
+        ['event_name','item_name','chart_string']
+    ]
+    cs_ovrd_event = cs_ovrd.loc[
+        cs_ovrd['item_name'].isna(),
+        ['event_name','chart_string']
+    ]
+
+    df = pd.merge(
+        df,
+        cs_ovrd_event,
+        on='event_name',
+        how='left',
+        suffixes=('','_ovrd_event')
+    )
+
+    df = pd.merge(
+        df,
+        cs_ovrd_item,
+        on=['event_name','item_name'],
+        how='left',
+        suffixes=('_orig','_ovrd_item')
+    )
+
+    df['chart_string_ovrd'] = df['chart_string_ovrd_item']\
+        .fillna(df['chart_string_ovrd_event'])
+    df['chart_string_to_use'] = df['chart_string_ovrd']\
+        .fillna(df['chart_string_orig'])
+
+    df = df.drop(columns=['chart_string_ovrd_item','chart_string_ovrd_event'])
+
+    df['balanced'] = df[['amount','total']].sum(axis=1).round(2).eq(0)
+
+    bal = df.loc[df['balanced']]\
+        .groupby(['transaction_id','wire_date','invoice_id','amount'])\
+        .agg(
+            chart_string = ('chart_string_to_use','first'),
+            n = ('chart_string_to_use','nunique'),
+        )
+
+    bal.loc[bal['n'].ne(1),'chart_string'] = None
+    bal = bal.drop(columns=['n'])
+
+    unbal = df.groupby(['transaction_id','wire_date','invoice_id','amount'])\
+        .agg(
+            chart_string = ('chart_string_to_use','first'),
+            n = ('chart_string_to_use','nunique'),
+        )
+
+    unbal.loc[unbal['n'].ne(1),'chart_string'] = None
+    unbal = unbal.drop(columns=['n'])
+
+    df = pd.merge(
+        bal,
+        unbal,
+        on=['transaction_id','wire_date','invoice_id','amount'],
+        how='outer',
+        suffixes=('_bal','_unbal')
+    )
+    df['chart_string'] = df['chart_string_bal'].fillna(df['chart_string_unbal'])
+    df = df.drop(columns=['chart_string_bal','chart_string_unbal'])\
+        .reset_index()
+
+    refund_df = pd.merge(
+        refund_df[['gateway','transaction_id','wire_date','invoice_id','amount']],
+        df[['transaction_id','chart_string']],
+        on='transaction_id',
+        how='left'
+    )
+    
+    return refund_df
+
+def process_refunds(
+    stripe_df,
+    invoice_df,
+    item_df,
+    cs_ovrd
+):
+    refund_auto_df = auto_assign_refunds(stripe_df,invoice_df,item_df,cs_ovrd)
+    refund_ovrd = pd.read_csv('refund_override.csv')
+
+    full_refund_df = pd.merge(
+        refund_auto_df,
+        refund_ovrd,
+        on='transaction_id',
+        how='left',
+        suffixes=('_auto','_ovrd')
+    )
+
+    full_refund_df['chart_string'] = full_refund_df['chart_string_ovrd']\
+        .fillna(full_refund_df['chart_string_auto'])
+
+    full_refund_df = full_refund_df[
+        ['gateway','transaction_id','wire_date','amount','chart_string']
+    ]
+
+    return full_refund_df
