@@ -1,209 +1,94 @@
 import pandas as pd
-from rapidfuzz import process, fuzz
+from rapidfuzz import fuzz
 
-def get_transaction_window(wire_date: pd.Timestamp | str):
-    """
-    Helper function for getting the transaction window for a given wire date
-    """
-    ## key is the weekday #, 0 is Monday, 4 is Friday
-    ## value is a list of the # of days to subtract off of the wire date
-    ## to get the start/end dates of the transaction window
-    wire_dict = {
-        0:[-5,-4],
-        1:[-5,-4],
-        2:[-5,-2],
-        3:[-3,-2],
-        4:[-3,-2],
-    }
-    
-    wire_date = pd.to_datetime(wire_date).date()   
-    wire_ts_local = pd.to_datetime(wire_date).tz_localize('America/Chicago') + pd.to_timedelta(19,unit='h')
-    start, end = wire_dict[wire_date.weekday()]
-
-    start_dt = wire_ts_local + pd.to_timedelta(start, unit='D')
-    end_dt = wire_ts_local + pd.to_timedelta(end, unit='D')
-
-    return start_dt, end_dt
-
-def match_blackthorn_to_stripe_charges(
-    stripe_df: pd.DataFrame,
-    invoice_df: pd.DataFrame,
-    item_df: pd.DataFrame
-) -> tuple[list[str],list[str]]:
-
-    """
-    Here we try to match invoices in Blackthorn to Stripe transactions (charges only)
-
-    Args:
-        stripe_df: pd.DataFrame - Stripe transactions
-        invoice_df: pd.DataFrame - Blackthorn invoices (items not needed at this time)
-
-    matched_transactions: list[str] will be a list of transaction_ids that are common to both
-        Stripe charges and Blackthorn invoices, and are confirmed to have the same transaction time,
-        customer email, amount, fees, and net.
-    unmatched_transactions: list[str] will be a list of transaction_ids that are only in Blackthorn
-        these are likely membership dues for NU clubs and need to be matched with another report
-    """
-
-    ## we only want invoices on the blackthorn report that are within the transaction windows
-    ## for the stripe wire dates, which are 7:00 pm to 6:59 pm the following business day
-    ## this eliminates irrelevant invoices that are going to be on other stripe reports
-    ## this also assumes that you have back-to-back reports, gaps are going to be a problem
-
-    trans_start, _ = get_transaction_window(stripe_df['wire_date'].min())
-    _, trans_end = get_transaction_window(stripe_df['wire_date'].max())
-
-    common = list(set(stripe_df.columns) & set(invoice_df.columns))
+def match_stripe_to_blackthorn(
+    stripe_df,
+    invoice_df
+):
+    common = ['amount','fees','net','email','transaction_timestamp']
 
     trans_df = pd.merge(
         stripe_df.loc[
-            stripe_df['type'].eq('charge'),
-            common + ['wire_date']
+            stripe_df['type'].eq('Charge'),
+            ['transaction_id','type','wire_date','amount','fees','net',
+            'gateway','email','transaction_timestamp']
         ],
-        invoice_df.loc[
-            invoice_df['transaction_timestamp'].ge(trans_start) &
-            invoice_df['transaction_timestamp'].le(trans_end),
-            common
-        ],
+        invoice_df[['transaction_id','amount','fees','net',
+            'gateway_name','email','transaction_timestamp']],
         on='transaction_id',
         how='left',
-        suffixes=('_str','_bt'),
+        suffixes=('_stripe','_blackthorn'),
         indicator=True
     )
 
-    unmatched_transactions = trans_df.loc[
-        trans_df['_merge'].eq('left_only'),
-        'transaction_id'].unique().tolist()
+    bt_match_df = trans_df.loc[
+        trans_df['_merge'].eq('both'),
+    ].drop(columns=['_merge'])
 
-    trans_df = trans_df[trans_df['_merge'].eq('both')].drop(columns=['_merge'])
-    validate = list(set(common) - set(['transaction_id','customer_name']))
-    for col in validate:
-        trans_df[f'{col}_equal'] = trans_df[f'{col}_str'].eq(trans_df[f'{col}_bt'])
-    assert trans_df[[col + '_equal' for col in validate]].all().all()
+    col_order = []
+    for c in common:
+        bt_match_df[f'{c}_match'] = bt_match_df[f'{c}_stripe'].eq(trans_df[f'{c}_blackthorn'])
+        col_order.extend([f'{c}_stripe',f'{c}_blackthorn',f'{c}_match'])
 
-    matched_df = trans_df[['transaction_id','wire_date']]\
-        .drop_duplicates()
+    col_order = [c for c in bt_match_df.columns if c not in col_order] + col_order
 
-    matched_df = pd.merge(
-        matched_df,
-        invoice_df[['invoice_id','transaction_id','amount','fees','gateway','event_name']]\
-            .rename(columns={'amount':'transaction_amount','fees':'transaction_fees'}),
-        on='transaction_id',
-    )
-    matched_df = pd.merge(
-        matched_df,
-        item_df.loc[
-            item_df['total'].fillna(0).gt(0),
-            ['invoice_id','chart_string','item_name','total']]\
-            .rename(columns={'total':'item_amount'}),
-        on='invoice_id',
-        how='inner'
+    blackthorn_match_df = bt_match_df[col_order]
+
+    unmatched_stripe_df = pd.merge(
+        stripe_df,
+        trans_df.loc[
+            trans_df['_merge'].eq('left_only'),
+            ['transaction_id','type']
+        ],
+        how='inner',
+        on=['transaction_id','type']
     )
 
-    return matched_df, unmatched_transactions
+    return blackthorn_match_df, unmatched_stripe_df
 
-def clean_name_column(s: pd.Series):
-    # 1. Convert to string, lowercase, and replace NaN with empty string
-    s = s.str.lower().fillna("")
-    
-    # 2. Strip common titles and suffixes (using regex word boundaries '\b')
-    noise_pattern = r'\b(dr|mr|mrs|ms|prof|jr|sr|ii|iii|phd|md)\b'
-    s = s.str.replace(noise_pattern, '', regex=True)
-    
-    # 3. Replace punctuation and special characters with a space
-    s = s.str.replace(r'[^\w\s]', ' ', regex=True)
-    
-    # 4. Remove extra internal, leading, and trailing whitespaces
-    # 'split' and 'join' via regex collapses multiple spaces into a single space
-    s = s.str.replace(r'\s+', ' ', regex=True).str.strip()
-    
-    return s
-    
-def match_memberships_to_stripe_charges(
-    stripe_df: pd.DataFrame,
-    mbr_df: pd.DataFrame,
-    unmatched_transactions: list[str]
-):
-    """
-    Match the Stripe transactions missing from the Blackthorn report to membership subscription purchases
-    found in a separate report.
+def match_stripe_to_memberships(
+    unmatched_stripe_df: pd.DataFrame,
+    mbr_df: pd.DataFrame
+) -> pd.DataFrame:
 
-    We don't have transaction ID, we only have the donor name, the transaction date, and the purchase amount.
-    We can do a fuzzy match on the donor name (usually the middle name or initial is absent and select for each transaction
-    the highest scoring string fuzzy match that also has an exact match for transaction date and amount.
-    """
-    to_match_df = stripe_df.loc[
-        stripe_df['transaction_id'].isin(unmatched_transactions),
-        ['transaction_id','customer_name','transaction_timestamp','amount','fees','wire_date','gateway']
-    ].rename(columns={'amount':'transaction_amount','fees':'transaction_fees'})
+    start = unmatched_stripe_df['transaction_timestamp'].min().floor('D') - pd.Timedelta(days=1)
+    end = unmatched_stripe_df['transaction_timestamp'].max().floor('D') + pd.Timedelta(days=2)
 
-    to_match_df['clean_name'] = clean_name_column(to_match_df['customer_name'])
-
-    choices = mbr_df[['donor_name','donor_id']].drop_duplicates()
-    choices['clean_name'] = clean_name_column(choices['donor_name'])
-    choices = choices.set_index('donor_id')['donor_name']
-
-    to_match_df['fuzzy_match_results'] = to_match_df['clean_name'].apply(
-        lambda x: process.extract(x,choices,scorer=fuzz.token_set_ratio,limit=3)
-    )
-
-    to_match_df = to_match_df.explode('fuzzy_match_results')
-    to_match_df[['match_name','match_score','donor_id']] = to_match_df['fuzzy_match_results'].apply(pd.Series)
-    to_match_df['match_rank'] = to_match_df.groupby('transaction_id')['match_score'].rank(method='dense',ascending=False)
-
-    comp = pd.merge(
-        to_match_df,
-        mbr_df[['donor_name','donor_id','amount','payment_date']]\
-            .rename(columns={'amount':'item_amount'}),
-        on='donor_id',
-    ).drop(columns=['clean_name','fuzzy_match_results'])
-    comp['transaction_date'] = comp['transaction_timestamp'].dt.date
-
-    comp['match_date'] = comp['payment_date'].eq(comp['transaction_date'])
-    comp['match_amount'] = comp['transaction_amount'].eq(comp['item_amount'])
-
-    final_match = comp.loc[comp.loc[
-            comp['match_date'] & comp['match_amount']
-        ].groupby('transaction_id')['match_score'].idxmax()
+    m = mbr_df.loc[
+        mbr_df['payment_date'].dt.date.between(start.date(),end.date()) &
+        mbr_df['tender_type'].eq('Credit Card'),
+        ['action_id','donor_name','payment_date','amount',
+        'item_name','event_name','chart_string']
     ]
+    m['payment_date'] = pd.to_datetime(m['payment_date'])
 
-    # this may not actually be true, but we would certainly hope that the best matching name also happens
-    # to be the one with the exact transaction date and amount
-    # this could not be true if there were donors that had similar names who happen to be on the same report
-    # highly unlikely, but possible
-    assert final_match['match_rank'].eq(1).all()
+    s = unmatched_stripe_df.loc[
+        unmatched_stripe_df['type'].eq('Charge'),
+        ['gateway','wire_date','transaction_id','customer_name',
+        'amount','fees','transaction_timestamp']
+    ]
+    s['transaction_date'] = s['transaction_timestamp'].dt.date
+    s['date_buffer'] = s['transaction_date'].apply(
+        lambda x: [x+pd.Timedelta(days=i) for i in range(-2,3)]
+    ).apply(pd.to_datetime)
+
+    s = s.explode('date_buffer',ignore_index=True)
 
     df = pd.merge(
-        final_match[['transaction_id','wire_date','donor_id','gateway',
-            'payment_date','transaction_amount','transaction_fees']],
-        mbr_df[['donor_id','donor_name','amount',
-                'chart_string','payment_date','item_name']]\
-                    .rename(columns={'amount':'item_amount'}),
-        on=['donor_id','payment_date'],
-        how='inner'
+        s,
+        m,
+        left_on=['date_buffer'],
+        right_on=['payment_date'],
+        suffixes=('','_membership')
     )
 
-    ## return the transaction ID, donor ID, and payment date so we can link the transactions
-    ## to the correct membership purchase
-    return df
-
-def match_all_charges(
-    stripe_df: pd.DataFrame, 
-    invoice_df: pd.DataFrame, 
-    item_df: pd.DataFrame, 
-    mbr_df: pd.DataFram
-):
+    df['name_match_score'] = df.apply(lambda x: fuzz.WRatio(x['customer_name'],x['donor_name']),axis=1) / 100
+    df['amount_match_score'] = (df['amount_membership'].div(df['amount']).apply(lambda x: x if x <= 1 else 1/x))
+    df['day_match_score'] = df['date_buffer'].eq(df['payment_date']).astype(int)
     
-    bt_match_df, unmatched_transactions = match_blackthorn_to_stripe_charges(stripe_df, invoice_df, item_df)
-    mbr_match_df = match_memberships_to_stripe_charges(stripe_df, mbr_df, unmatched_transactions)
+    df['match_score'] = df[['name_match_score','amount_match_score','day_match_score']].mean(axis=1)
+    df = df.loc[
+        df.groupby('transaction_id')['match_score'].idxmax()
+    ]
 
-    cols = ['transaction_id','gateway','wire_date','item_name','event_name',
-        'chart_string','item_amount','transaction_fees','transaction_amount']
-
-    all_match_df = pd.concat([
-        bt_match_df.reindex(columns=cols),
-        mbr_match_df.reindex(columns=cols).assign(event_name='Memberships')
-    ]).reset_index(drop=True)
-
-    return all_match_df
-
+    return df
