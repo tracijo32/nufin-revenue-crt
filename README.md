@@ -21,3 +21,4 @@ As much as I wanted to make this code more sophisticated, I had to deliver code 
 
 Nevertheless, I will try to document this code as best I can so that you can use the logic to get started on a better solution. Good luck!
 
+You probably already know this, but if you plan on forking this repo, be sure not to include any sensitive information. Do not commit any files with actual donor names, transations, chart strings, etc. Avoid hard coding any of these values - pass them in as parameters using the configuration file.
