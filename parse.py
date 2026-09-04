@@ -81,6 +81,10 @@ def parse_membership_report(path: os.PathLike):
         num_cols=['amount','payment_credit']
     )
     df['chart_string'] = format_chart_string(df['chart_string'])
+    df['action_id'] = df['payment_date'].dt.strftime('%Y%m%d') + '-' + \
+        df['donor_id'] + '-' + \
+        df.groupby(['payment_date','donor_id']).cumcount().add(1).astype(str)
+    df = df.set_index('action_id').reset_index()
 
     return df
 
@@ -114,11 +118,13 @@ def parse_blackthorn_report(path: os.PathLike):
             'transaction_timestamp',
             'gateway_name'
     ]
+    df['item_line_number'] = df.groupby('invoice_id').cumcount().add(1)
+    df['item_id'] = df['invoice_id'].str.replace('IN-','LI-') + '-' + df['item_line_number'].astype(str)
 
     invoice_df = df.groupby('invoice_id')[invoice_columns].first().reset_index()
     invoice_df['transaction_timestamp'] = invoice_df['transaction_timestamp'].dt.tz_localize('America/Chicago')
 
-    item_df = df.reindex(columns=['invoice_id','donor_id','chart_string','item_name','total'])
+    item_df = df.reindex(columns=['item_id','invoice_id','donor_id','chart_string','item_line_number','item_name','total'])
     item_df['chart_string'] = format_chart_string(item_df['chart_string'])
     return invoice_df, item_df
 
