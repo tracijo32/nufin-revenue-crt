@@ -1,7 +1,6 @@
 import pandas as pd
-import os
+import os, glob, re
 import warnings
-
 
 def read_excel(path: os.PathLike, **kwargs):
     with warnings.catch_warnings():
@@ -11,11 +10,6 @@ def read_excel(path: os.PathLike, **kwargs):
             category=UserWarning,
         )
         return pd.read_excel(path, **kwargs)
-
-def format_chart_string(s: pd.Series):
-    s = s.str.split(',').apply(lambda x: ','.join([i.strip().replace(' ','-') for i in x])
-     if isinstance(x,list) else x)
-    return s
 
 def detect_header_row(
         path: os.PathLike,
@@ -92,10 +86,9 @@ def parse_membership_report(path: os.PathLike):
         num_cols=['amount','payment_credit']
     )
     df['event_name'] = 'Membership Payment'
-    df['chart_string'] = format_chart_string(df['chart_string'])
-    df['action_id'] = df['payment_date'].dt.strftime('%Y%m%d') + '-' + \
-        df['donor_id'] + '-' + \
-        df.groupby(['payment_date','donor_id']).cumcount().add(1).astype(str)
+
+    ## opportunity id SHOULD be unique, to be safe, we'll add date to it as well
+    df['action_id'] = df['opportunity_name'] + '-' + df['payment_date'].dt.strftime('%Y%m%d')
     df = df.set_index('action_id').reset_index()
 
     return df
@@ -137,7 +130,6 @@ def parse_blackthorn_report(path: os.PathLike):
     invoice_df['transaction_timestamp'] = invoice_df['transaction_timestamp'].dt.tz_localize('America/Chicago')
 
     item_df = df.reindex(columns=['item_id','invoice_id','donor_id','chart_string','item_line_number','item_name','total'])
-    item_df['chart_string'] = format_chart_string(item_df['chart_string'])
     return invoice_df, item_df
 
 def parse_stripe_report(
@@ -189,3 +181,93 @@ def parse_stripe_report(
     
     return df
 
+def combine_blackthorn_reports(
+    list_of_files: list[os.PathLike]
+):
+    ## parse each file and if successful and append to a list
+    invoice_df = []
+    item_df = []
+    for file in list_of_files:
+        try:
+            a, b = parse_blackthorn_report(file)
+            invoice_df.append(a.assign(source=file))
+            item_df.append(b.assign(source=file))
+        except Exception:
+            pass
+    
+    ## if no files could be parsed, raise an error
+    if len(invoice_df) == 0:
+        raise ValueError(f'No Blackthorn .xlsx files could be parsed')
+
+    ## concatenate all dataframes and return
+    invoice_df = pd.concat(invoice_df)
+    item_df = pd.concat(item_df)
+
+    coverage_df = invoice_df.groupby('source')['transaction_timestamp']\
+        .agg(['min','max','count']).reset_index()
+
+    ## remove duplicate invoices by selecting the value from the latest file
+    ## determined by that file's last transaction timestamp
+    source_precedence = invoice_df.groupby('source')['transaction_timestamp'].agg(['min','max'])\
+        .sort_values(by=['max','min'],ascending=False).index.values.tolist()
+
+    invoice_df['source'] = pd.Categorical(invoice_df['source'],categories=source_precedence,ordered=True)
+    item_df['source'] = pd.Categorical(item_df['source'],categories=source_precedence,ordered=True)
+
+    highest_precedence = invoice_df.groupby('invoice_id')['source'].transform('min')
+    invoice_df = invoice_df[invoice_df['source'].eq(highest_precedence)]
+
+    item_df = pd.merge(
+        item_df,
+        invoice_df[['invoice_id','source']],
+        on=['invoice_id','source'],
+        how='inner'
+    )
+    assert not item_df['item_id'].duplicated().any()
+    assert not invoice_df['invoice_id'].duplicated().any()
+
+    return invoice_df, item_df, coverage_df
+
+def combine_membership_reports(
+    list_of_files: list[os.PathLike]
+):
+    ## parse each file and append to a list
+    mbr_df = []
+    coverage_df = []
+    for file in list_of_files:
+        try:
+            mbr_df.append(parse_membership_report(file).assign(source=file))
+            coverage_df.append(mbr_df.groupby('source')['payment_date'].agg(['min','max','count']).reset_index())
+        except Exception:
+            pass
+    
+    ## if no files could be parsed, raise an error
+    if len(mbr_df) == 0:
+        raise ValueError(f'No membership .xlsx files could be parsed')
+
+    mbr_df = pd.concat(mbr_df)
+    coverage_df = mbr_df.groupby('source')['payment_date'].agg(['min','max','count']).reset_index()
+    
+    source_precedence = mbr_df.groupby('source')['payment_date'].agg(['min','max'])\
+        .sort_values(by=['max','min'],ascending=False).index.values.tolist()
+
+    mbr_df['source'] = pd.Categorical(mbr_df['source'],categories=source_precedence,ordered=True)
+    highest_precedence = mbr_df.groupby('action_id')['source'].transform('min')
+
+    mbr_df = mbr_df[mbr_df['source'].eq(highest_precedence)]\
+        .reset_index(drop=True)
+
+    assert not mbr_df['action_id'].duplicated().any()
+
+    return mbr_df, coverage_df
+
+def combine_stripe_reports(
+    list_of_files: list[os.PathLike]
+):
+    for f in list_of_files:
+        try:
+            df = parse_stripe_report(f).assign(source=f)
+        except:
+            pass
+
+    return df
