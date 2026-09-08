@@ -1,5 +1,10 @@
-import os
+import os, re, glob
 import pandas as pd
+from parse import \
+    combine_blackthorn_reports, \
+    combine_membership_reports, \
+    combine_stripe_reports
+
 
 CONFIG_INPUT_FRAMES = {
     'parameters':{
@@ -104,7 +109,6 @@ class ConfigFileLoadException(Exception):
 
 class ConfigFileValidationException(Exception):
     pass
-
 
 def load_input_frame(
     path_to_input_file: os.PathLike,
@@ -218,3 +222,91 @@ def load_and_validate_input_frame(
         raise ConfigFileValidationException(f"Error validating {sheet_name} input frame: {e}")
     
     return df
+
+class Config:
+    @staticmethod
+    def parse_report_path_to_file_list(
+        path: os.PathLike,
+        file_glob: str = '*',
+        file_regex: str | None = None
+    ):
+        path = os.path.expanduser(os.path.abspath(path))
+        if not os.path.exists(path):
+            raise FileNotFoundError(f'{path} does not exist')
+
+        if os.path.isdir(path):
+            file_list = glob.glob(os.path.join(path,file_glob))
+        else:
+            file_list = glob.glob(os.path.join(os.path.dirname(path),file_glob))
+            file_list = [f for f in file_list if f == path]
+
+        if len(file_list) == 0:
+            raise FileNotFoundError(f'No files found in {path} matching {file_glob}')
+
+        if file_regex is not None:
+            file_list = [f for f in file_list if re.match(file_regex,os.path.basename(f))]
+            if len(file_list) == 0:
+                raise FileNotFoundError(f'No files found in {path} matching {file_regex}')
+
+        return file_list
+
+    def __init__(self, config_path: os.PathLike):
+        self.input_frames = {}
+        for k in CONFIG_INPUT_FRAMES.keys():
+            self.input_frames[k] = load_and_validate_input_frame(
+                path_to_input_file=config_path,
+                sheet_name=k
+            )
+        self._param_dict = self.input_frames['parameters'].set_index('parameter')['value'].to_dict()
+        self.data_files = {}
+        self.default_stripe_fee_chart_string = self._param_dict.get('default_stripe_fee_chart_string')
+        self.wire_start_date = pd.to_datetime(self._param_dict.get('wire_start_date'))
+        self.wire_end_date = pd.to_datetime(self._param_dict.get('wire_end_date'))
+        
+        self.data_files['blackthorn'] = self.parse_report_path_to_file_list(
+            self._param_dict['path_to_blackthorn'],
+            file_glob='*.xlsx'
+        )
+        self.data_files['membership'] = self.parse_report_path_to_file_list(
+            self._param_dict['path_to_membership'],
+            file_glob='*.xlsx'
+        )
+        self.gateways = self._param_dict.get('gateways_to_process','ARD')\
+            .replace(' ','').split('|')
+        
+        prefix_pat = '|'.join(re.escape(p) for p in self.gateways)
+        file_regex = re.compile(
+            rf'^({prefix_pat})\s+(\d{{2}}\.\d{{2}}\.\d{{2}})\.csv$'
+        )
+        self.data_files['stripe'] = self.parse_report_path_to_file_list(
+            self._param_dict['path_to_stripe'],
+            file_glob='*.csv',
+            file_regex=file_regex
+        )
+
+    def load_raw_data(self):
+        self.raw_data = {}
+
+        invoice_df, item_df, coverage_df = combine_blackthorn_reports(
+            self.data_files['blackthorn']
+        )
+        self.raw_data['blackthorn'] = {
+            'invoice_df': invoice_df,
+            'item_df': item_df,
+            'coverage_df': coverage_df
+        }
+
+        mbr_df, coverage_df = combine_membership_reports(
+            self.data_files['membership']
+        )
+        self.raw_data['membership'] = {
+            'mbr_df': mbr_df,
+            'coverage': coverage_df
+        }
+
+        stripe_df = combine_stripe_reports(
+            self.data_files['stripe']
+        )
+        self.raw_data['stripe'] = stripe_df
+
+        return
