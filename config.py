@@ -42,16 +42,6 @@ CONFIG_INPUT_FRAMES = {
     },
     'chart_string_override': {
         'columns': {
-            'event_name': {
-                'dtype': str,
-                'unique': False,
-                'nullable': False
-            },
-            'item_name': {
-                'dtype': str,
-                'unique': False,
-                'nullable': True
-            },
             'chart_string': {
                 'dtype': str,
                 'unique': False,
@@ -61,10 +51,26 @@ CONFIG_INPUT_FRAMES = {
                 'dtype': str,
                 'unique': False,
                 'nullable': True
+            },
+            'original_chart_string': {
+                'dtype': str,
+                'unique': False,
+                'nullable': True
+            },
+            'event_name': {
+                'dtype': str,
+                'unique': False,
+                'nullable': True
+            },
+            'item_name': {
+                'dtype': str,
+                'unique': False,
+                'nullable': True
             }
         },
         'multi_index_columns': [
-            ['event_name', 'item_name']
+            ['chart_string','original_chart_string','event_name','item_name'],
+            ['chart_string','description']
         ]
     },
     'refund_override': {
@@ -251,37 +257,36 @@ class Config:
         return file_list
 
     def __init__(self, config_path: os.PathLike):
-        self.input_frames = {}
-        for k in CONFIG_INPUT_FRAMES.keys():
-            self.input_frames[k] = load_and_validate_input_frame(
-                path_to_input_file=config_path,
-                sheet_name=k
-            )
-        self._param_dict = self.input_frames['parameters'].set_index('parameter')['value'].to_dict()
+        self.raw_input = {}
+        for k,v in CONFIG_INPUT_FRAMES.items():
+            self.raw_input[k] = load_and_validate_input_frame(
+            path_to_input_file=config_path,
+            sheet_name=k
+        )
+        self.clean_input = {}
+        self.raw_data = {}
+        self.clean_data = {}
         self.data_files = {}
-        self.default_stripe_fee_chart_string = self._param_dict.get('default_stripe_fee_chart_string')
-        self.wire_start_date = pd.to_datetime(self._param_dict.get('wire_start_date'))
-        self.wire_end_date = pd.to_datetime(self._param_dict.get('wire_end_date'))
-        
-        self.data_files['blackthorn'] = self.parse_report_path_to_file_list(
-            self._param_dict['path_to_blackthorn'],
-            file_glob='*.xlsx'
-        )
-        self.data_files['membership'] = self.parse_report_path_to_file_list(
-            self._param_dict['path_to_membership'],
-            file_glob='*.xlsx'
-        )
-        self.gateways = self._param_dict.get('gateways_to_process','ARD')\
+        param_dict = self.raw_input['parameters'].set_index('parameter')['value'].to_dict()
+        gateways = param_dict.get('gateways_to_process','ARD')\
             .replace(' ','').split('|')
         
-        prefix_pat = '|'.join(re.escape(p) for p in self.gateways)
+        prefix_pat = '|'.join(re.escape(p) for p in gateways)
         file_regex = re.compile(
             rf'^({prefix_pat})\s+(\d{{2}}\.\d{{2}}\.\d{{2}})\.csv$'
         )
         self.data_files['stripe'] = self.parse_report_path_to_file_list(
-            self._param_dict['path_to_stripe'],
+            param_dict['path_to_stripe'],
             file_glob='*.csv',
             file_regex=file_regex
+        )
+        self.data_files['blackthorn'] = self.parse_report_path_to_file_list(
+            param_dict['path_to_blackthorn'],
+            file_glob='*.xlsx'
+        )
+        self.data_files['membership'] = self.parse_report_path_to_file_list(
+            param_dict['path_to_membership'],
+            file_glob='*.xlsx'
         )
 
     def load_raw_data(self):
@@ -291,22 +296,70 @@ class Config:
             self.data_files['blackthorn']
         )
         self.raw_data['blackthorn'] = {
-            'invoice_df': invoice_df,
-            'item_df': item_df,
-            'coverage_df': coverage_df
+            'event_invoices': invoice_df,
+            'event_items': item_df,
+            'source_file_date_coverage': coverage_df
         }
 
         mbr_df, coverage_df = combine_membership_reports(
             self.data_files['membership']
         )
         self.raw_data['membership'] = {
-            'mbr_df': mbr_df,
-            'coverage': coverage_df
+            'membership_purchases': mbr_df,
+            'source_file_date_coverage': coverage_df
         }
 
         stripe_df = combine_stripe_reports(
             self.data_files['stripe']
         )
-        self.raw_data['stripe'] = stripe_df
+        self.raw_data['stripe'] = {
+            'transaction_frame': stripe_df
+        }
+
+        return
+
+    def process_chart_string_overrides(self):
+        ovrd_df = self.raw_input['chart_string_override']
+
+        cs_desc = ovrd_df[['chart_string','description']].dropna()\
+            .groupby('chart_string')['description'].first().to_dict()
+
+        ovrd_df = ovrd_df.drop(columns=['description'])\
+            .rename(columns={
+                'chart_string':'new_chart_string',
+                'original_chart_string':'chart_string'
+            })
+
+        invoice_df = self.raw_data['blackthorn']['event_invoices']
+        item_df = self.raw_data['blackthorn']['event_items']
+        mbr_df = self.raw_data['membership']['membership_purchases']
+
+        df1 = pd.merge(
+            item_df[['invoice_id','chart_string','item_name']],
+            invoice_df[['invoice_id','event_name']],
+            on='invoice_id'
+        ).drop(columns=['invoice_id'])\
+            .drop_duplicates()
+
+        df2 = mbr_df[['chart_string','event_name','item_name']].drop_duplicates()
+        
+        df = pd.concat([df1,df2]).drop_duplicates()
+
+        cs_map_df = []
+        for _, row in ovrd_df.iterrows():
+            to_match = row[['chart_string','event_name','item_name']].dropna().to_dict()
+            match_df = df.query(
+                ' & '.join([
+                    f"{k} == '{v}'"
+                    for k,v in to_match.items()
+                ])
+            ).assign(
+                new_chart_string = row['new_chart_string']
+            )
+            cs_map_df.append(match_df)
+        cs_map_df = pd.concat(cs_map_df)
+
+        self.clean_input['chart_string_map_frame'] = cs_map_df
+        self.clean_input['chart_string_description_dict'] = cs_desc
 
         return
