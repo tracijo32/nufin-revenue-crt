@@ -1,5 +1,16 @@
 import pandas as pd
 import os
+import warnings
+
+
+def read_excel(path: os.PathLike, **kwargs):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Workbook contains no default style, apply openpyxl's default",
+            category=UserWarning,
+        )
+        return pd.read_excel(path, **kwargs)
 
 def format_chart_string(s: pd.Series):
     s = s.str.split(',').apply(lambda x: ','.join([i.strip().replace(' ','-') for i in x])
@@ -14,7 +25,7 @@ def detect_header_row(
     """
     Iterate over the first nrows of the file and match on strings to identify the header row.
     """
-    top = pd.read_excel(path, nrows=nrows, header=None)
+    top = read_excel(path, nrows=nrows, header=None)
     
     for i, row in top.iterrows():
         if all([row.str.lower().str.contains(cn).any() for cn in identifying_columns]):
@@ -37,7 +48,7 @@ def parse_lightning_report(
     num_cols: list[str] | None = None
 ):
     header_row = detect_header_row(path,identifying_columns=identifying_columns)
-    df = pd.read_excel(path, skiprows=header_row,dtype=str)
+    df = read_excel(path, skiprows=header_row,dtype=str)
     df.columns = df.columns.str.strip().str.lower()
 
     sum_count_col = df.columns[df.apply(identify_sum_count,axis=0)][0]
