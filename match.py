@@ -1,6 +1,7 @@
 import pandas as pd
 from rapidfuzz import fuzz
 from data import BlackthornData, MembershipData, StripeData
+from config import Config
 
 def match_stripe_to_blackthorn(
     stripe_data: StripeData,
@@ -178,8 +179,9 @@ def auto_match_refunds(
 
 def apply_overrides_to_refunds(
     refund_df: pd.DataFrame,
-    ovrd_df: pd.DataFrame
+    config: Config
 ):
+    ovrd_df = config.load_refund_override()
     df = pd.merge(
         refund_df,
         ovrd_df,
@@ -189,9 +191,9 @@ def apply_overrides_to_refunds(
         indicator=True
     )
 
-    df['chart_string'] = df['chart_string_auto'].fillna(df['chart_string_ovrd'])\
+    df['chart_string'] = df['chart_string_ovrd'].fillna(df['chart_string_auto'])\
         .fillna('<NULL>')
-    df['amount'] = df['amount_auto'].fillna(df['amount_ovrd'])
+    df['amount'] = df['amount_ovrd'].fillna(df['amount_auto'])
     df = df.reindex(columns=refund_df.columns)
 
     return df
