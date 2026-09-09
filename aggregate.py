@@ -179,14 +179,58 @@ def balance_refunds(
 def get_crt_lines(
     gross_df: pd.DataFrame,
     fees_df: pd.DataFrame,
-    usage_df: pd.DataFrame
+    refund_df: pd.DataFrame,
+    usage_df: pd.DataFrame,
+    config: Config
 ):
     
+    cols = ['gateway','wire_date','chart_string','description','amount']
+
     df = pd.concat([
-        gross_df.rename(columns={'gross':'amount'}),
-        fees_df.rename(columns={'fees':'amount'}),
-        usage_df.rename(columns={'amount':'amount'})
-    ]).groupby(['gateway','wire_date','chart_string','description'])\
+        gross_df.rename(columns={'gross':'amount'})\
+            .reindex(columns=cols),
+        fees_df.rename(columns={'fees':'amount'})\
+            .reindex(columns=cols),
+        usage_df.reindex(columns=cols),
+        refund_df.reindex(columns=cols)
+    ])
+
+    df['description'] = df['description'].fillna(
+        df.groupby(['gateway','chart_string'])['description']\
+            .transform('first')
+    ).fillna(config.default_refund_chart_string_description)
+
+    crt_lines = df.groupby(['gateway','wire_date','chart_string','description'])\
         ['amount'].sum().reset_index()
 
-    return df
+    return crt_lines
+
+def balance_crt(
+    stripe_data: StripeData,
+    crt_lines: pd.DataFrame
+) -> pd.DataFrame:
+
+    df = stripe_data.transactions
+    df['transaction_date'] = pd.to_datetime(df['transaction_timestamp']).dt.date
+    df.loc[df['type'].ne('Charge'),'transaction_date'] = None
+
+    stripe_net = df.groupby(['gateway','wire_date']).agg(
+        transaction_dates = pd.NamedAgg('transaction_date',lambda x: sorted(x.dropna().unique())),
+        net_amount = pd.NamedAgg('net','sum')
+    )
+
+    crt_net = crt_lines.groupby(['gateway','wire_date'])['amount']\
+        .sum().rename('net_amount')
+
+    bal = pd.merge(
+        stripe_net,
+        crt_net,
+        left_index = True,
+        right_index = True,
+        how = 'left',
+        suffixes = ['_stripe','_crt']
+    )
+    bal['net_amount_diff'] = bal['net_amount_stripe'].subtract(bal['net_amount_crt']).round(2)
+    bal['balanced'] = bal['net_amount_diff'].eq(0)
+
+    return bal
