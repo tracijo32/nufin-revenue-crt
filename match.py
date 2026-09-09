@@ -197,3 +197,21 @@ def apply_overrides_to_refunds(
     df = df.reindex(columns=refund_df.columns)
 
     return df
+
+def match_refunds(
+    bt_data: BlackthornData,
+    stripe_data: StripeData,
+    config: Config
+):
+    auto_df = auto_match_refunds(stripe_data, bt_data)
+    refund_df = apply_overrides_to_refunds(auto_df, config)
+    return refund_df
+
+def match_charges(
+    stripe_data: StripeData,
+    bt_data: BlackthornData,
+    mbr_data: MembershipData,
+):
+    bt_match_df, unmatched_stripe_df = match_stripe_to_blackthorn(stripe_data, bt_data)
+    mbr_match_df = match_stripe_to_memberships(unmatched_stripe_df, mbr_data)
+    return bt_match_df, mbr_match_df
