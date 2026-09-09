@@ -5,7 +5,6 @@ from parse import \
     combine_membership_reports, \
     combine_stripe_reports
 
-
 CONFIG_INPUT_FRAMES = {
     'parameters':{
         'columns':{
@@ -21,24 +20,27 @@ CONFIG_INPUT_FRAMES = {
             }
         }
     },
-    'fee_bucket_override': {
+    'fee_assignment_by_event': {
         'columns': {
             'event_name': {
                 'dtype': str,
                 'unique': True,
                 'nullable': False
             },
-            'fee_bucket': {
+            'school': {
                 'dtype': str,
                 'unique': False,
                 'nullable': False
             },
-            'chart_string': {
+            'fee_chart_string': {
                 'dtype': str,
                 'unique': False,
                 'nullable': True
             }
-        }
+        },
+        'multi_index_columns': [
+            ['event_name','school']
+        ]
     },
     'chart_string_override': {
         'columns': {
@@ -258,69 +260,49 @@ class Config:
 
     def __init__(self, config_path: os.PathLike):
         self.raw_input = {}
-        for k,v in CONFIG_INPUT_FRAMES.items():
-            self.raw_input[k] = load_and_validate_input_frame(
-            path_to_input_file=config_path,
-            sheet_name=k
+        for key in CONFIG_INPUT_FRAMES.keys():
+            self.raw_input[key] = load_and_validate_input_frame(
+                path_to_input_file=config_path,
+                sheet_name=key
+            )
+        self._param_dict = self.raw_input['parameters']\
+            .set_index('parameter')['value'].to_dict()
+
+    def load_blackthorn_data(self):
+        blackthorn_files = self.parse_report_path_to_file_list(
+            self._param_dict['path_to_blackthorn'],
+                file_glob='*.xlsx'
+            )
+        return combine_blackthorn_reports(blackthorn_files)
+
+    def load_membership_data(self):
+        membership_files = self.parse_report_path_to_file_list(
+            self._param_dict['path_to_membership'],
+            file_glob='*.xlsx'
         )
-        self.clean_input = {}
-        self.raw_data = {}
-        self.clean_data = {}
-        self.data_files = {}
-        param_dict = self.raw_input['parameters'].set_index('parameter')['value'].to_dict()
-        gateways = param_dict.get('gateways_to_process','ARD')\
+        return combine_membership_reports(membership_files)
+
+    def load_stripe_data(self):
+        gateways = self._param_dict.get('gateways_to_process','ARD')\
             .replace(' ','').split('|')
-        
         prefix_pat = '|'.join(re.escape(p) for p in gateways)
         file_regex = re.compile(
             rf'^({prefix_pat})\s+(\d{{2}}\.\d{{2}}\.\d{{2}})\.csv$'
         )
-        self.data_files['stripe'] = self.parse_report_path_to_file_list(
-            param_dict['path_to_stripe'],
+        stripe_files = self.parse_report_path_to_file_list(
+            self._param_dict['path_to_stripe'],
             file_glob='*.csv',
             file_regex=file_regex
         )
-        self.data_files['blackthorn'] = self.parse_report_path_to_file_list(
-            param_dict['path_to_blackthorn'],
-            file_glob='*.xlsx'
-        )
-        self.data_files['membership'] = self.parse_report_path_to_file_list(
-            param_dict['path_to_membership'],
-            file_glob='*.xlsx'
-        )
+        return combine_stripe_reports(stripe_files)
 
-    def load_raw_data(self):
-        self.raw_data = {}
-
-        invoice_df, item_df, coverage_df = combine_blackthorn_reports(
-            self.data_files['blackthorn']
-        )
-        self.raw_data['blackthorn'] = {
-            'event_invoices': invoice_df,
-            'event_items': item_df,
-            'source_file_date_coverage': coverage_df
-        }
-
-        mbr_df, coverage_df = combine_membership_reports(
-            self.data_files['membership']
-        )
-        self.raw_data['membership'] = {
-            'membership_purchases': mbr_df,
-            'source_file_date_coverage': coverage_df
-        }
-
-        stripe_df = combine_stripe_reports(
-            self.data_files['stripe']
-        )
-        self.raw_data['stripe'] = {
-            'transaction_frame': stripe_df
-        }
-
-        return
-
-    def process_chart_string_overrides(self):
+    def process_chart_string_overrides(
+        self,
+        invoice_df: pd.DataFrame,
+        item_df: pd.DataFrame,
+        mbr_df: pd.DataFrame
+    ):
         ovrd_df = self.raw_input['chart_string_override']
-
         cs_desc = ovrd_df[['chart_string','description']].dropna()\
             .groupby('chart_string')['description'].first().to_dict()
 
@@ -330,20 +312,22 @@ class Config:
                 'original_chart_string':'chart_string'
             })
 
-        invoice_df = self.raw_data['blackthorn']['event_invoices']
-        item_df = self.raw_data['blackthorn']['event_items']
-        mbr_df = self.raw_data['membership']['membership_purchases']
-
         df1 = pd.merge(
-            item_df[['invoice_id','chart_string','item_name']],
-            invoice_df[['invoice_id','event_name']],
+            item_df[['invoice_id','chart_string','item_name']].fillna('<NULL>'),
+            invoice_df[['invoice_id','event_name']].fillna('<NULL>'),
             on='invoice_id'
         ).drop(columns=['invoice_id'])\
             .drop_duplicates()
 
-        df2 = mbr_df[['chart_string','event_name','item_name']].drop_duplicates()
+        df2 = mbr_df[['chart_string','event_name','item_name']]\
+            .fillna('<NULL>').drop_duplicates()
         
         df = pd.concat([df1,df2]).drop_duplicates()
+        df = df[
+            df['chart_string'].isin(ovrd_df['chart_string'].dropna()) |
+            df['event_name'].isin(ovrd_df['event_name'].dropna()) |
+            df['item_name'].isin(ovrd_df['item_name'].dropna())
+        ]
 
         cs_map_df = []
         for _, row in ovrd_df.iterrows():
@@ -359,7 +343,4 @@ class Config:
             cs_map_df.append(match_df)
         cs_map_df = pd.concat(cs_map_df)
 
-        self.clean_input['chart_string_map_frame'] = cs_map_df
-        self.clean_input['chart_string_description_dict'] = cs_desc
-
-        return
+        return cs_map_df, cs_desc
