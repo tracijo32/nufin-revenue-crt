@@ -76,7 +76,7 @@ CONFIG_INPUT_FRAMES = {
         'columns': {
             'transaction_id': {
                 'dtype': str,
-                'unique': True,
+                'unique': False,
                 'nullable': False
             },
             'amount': {
@@ -85,9 +85,13 @@ CONFIG_INPUT_FRAMES = {
             },
             'chart_string': {
                 'dtype': str,
+                'unique': False,
                 'nullable': False
             }
-        }
+        },
+        'multi_index_columns': [
+            ['transaction_id','chart_string']
+        ]
     },
     'line_item_override': {
         'columns': {
