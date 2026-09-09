@@ -1,9 +1,6 @@
 import os, re, glob
 import pandas as pd
-from parse import \
-    combine_blackthorn_reports, \
-    combine_membership_reports, \
-    combine_stripe_reports
+from data import BlackthornData, MembershipData, StripeData
 
 CONFIG_INPUT_FRAMES = {
     'parameters':{
@@ -110,7 +107,6 @@ CONFIG_INPUT_FRAMES = {
         }
     }
 }
-
 
 class ConfigFileLoadException(Exception):
     pass
@@ -267,20 +263,22 @@ class Config:
             )
         self._param_dict = self.raw_input['parameters']\
             .set_index('parameter')['value'].to_dict()
+        self.default_fee_chart_string = self._param_dict\
+            .get('default_fee_chart_string','<NULL>')
 
     def load_blackthorn_data(self):
-        blackthorn_files = self.parse_report_path_to_file_list(
+        files = self.parse_report_path_to_file_list(
             self._param_dict['path_to_blackthorn'],
-                file_glob='*.xlsx'
-            )
-        return combine_blackthorn_reports(blackthorn_files)
+            file_glob='*.xlsx'
+        )
+        return BlackthornData(files)
 
     def load_membership_data(self):
-        membership_files = self.parse_report_path_to_file_list(
+        files = self.parse_report_path_to_file_list(
             self._param_dict['path_to_membership'],
             file_glob='*.xlsx'
         )
-        return combine_membership_reports(membership_files)
+        return MembershipData(files)
 
     def load_stripe_data(self):
         gateways = self._param_dict.get('gateways_to_process','ARD')\
@@ -289,58 +287,34 @@ class Config:
         file_regex = re.compile(
             rf'^({prefix_pat})\s+(\d{{2}}\.\d{{2}}\.\d{{2}})\.csv$'
         )
-        stripe_files = self.parse_report_path_to_file_list(
+        files = self.parse_report_path_to_file_list(
             self._param_dict['path_to_stripe'],
             file_glob='*.csv',
             file_regex=file_regex
         )
-        return combine_stripe_reports(stripe_files)
+        return StripeData(files)
 
-    def process_chart_string_overrides(
-        self,
-        invoice_df: pd.DataFrame,
-        item_df: pd.DataFrame,
-        mbr_df: pd.DataFrame
-    ):
-        ovrd_df = self.raw_input['chart_string_override']
-        cs_desc = ovrd_df[['chart_string','description']].dropna()\
+    def load_chart_string_descriptions(self):
+        df = self.raw_input['chart_string_override']
+        return df[['chart_string','description']].dropna()\
             .groupby('chart_string')['description'].first().to_dict()
 
-        ovrd_df = ovrd_df.drop(columns=['description'])\
+    def load_chart_string_mapping(self):
+        df = self.raw_input['chart_string_override']
+        return df.drop(columns=['description'])\
             .rename(columns={
                 'chart_string':'new_chart_string',
                 'original_chart_string':'chart_string'
             })
+    def load_fee_assignment_by_event(self):
+        df = self.raw_input['fee_assignment_by_event']\
+            .rename(columns={'fee_chart_string':'chart_string'})
+        df['chart_string'] = df['chart_string']\
+            .fillna(self.default_fee_chart_string)
+        return df
 
-        df1 = pd.merge(
-            item_df[['invoice_id','chart_string','item_name']].fillna('<NULL>'),
-            invoice_df[['invoice_id','event_name']].fillna('<NULL>'),
-            on='invoice_id'
-        ).drop(columns=['invoice_id'])\
-            .drop_duplicates()
+    def load_line_item_override(self):
+        return self.raw_input['line_item_override']
 
-        df2 = mbr_df[['chart_string','event_name','item_name']]\
-            .fillna('<NULL>').drop_duplicates()
-        
-        df = pd.concat([df1,df2]).drop_duplicates()
-        df = df[
-            df['chart_string'].isin(ovrd_df['chart_string'].dropna()) |
-            df['event_name'].isin(ovrd_df['event_name'].dropna()) |
-            df['item_name'].isin(ovrd_df['item_name'].dropna())
-        ]
-
-        cs_map_df = []
-        for _, row in ovrd_df.iterrows():
-            to_match = row[['chart_string','event_name','item_name']].dropna().to_dict()
-            match_df = df.query(
-                ' & '.join([
-                    f"{k} == '{v}'"
-                    for k,v in to_match.items()
-                ])
-            ).assign(
-                new_chart_string = row['new_chart_string']
-            )
-            cs_map_df.append(match_df)
-        cs_map_df = pd.concat(cs_map_df)
-
-        return cs_map_df, cs_desc
+    def load_refund_override(self):
+        return self.raw_input['refund_override']
