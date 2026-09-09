@@ -142,6 +142,10 @@ def validate_input_frame(
     cols_unique: list[str] = [],
     multi_index_cols: list[tuple[str, ...]] = []
 ):
+    ## Drop rows that are completely null
+    ## sometimes Excel adds blank rows when it edits CSVs
+    df = df[~df.isnull().all(axis=1)]
+
     for col in cols_not_null:
         if df[col].isnull().any():
             raise ValueError(f'{col} contains null values')
@@ -270,6 +274,11 @@ class Config:
         self.default_stripe_fee_chart_string = self._param_dict\
             .get('default_stripe_fee_chart_string','<STRIPE FEE CHART STRING>')
         self.set_discounts_to_zero = 'T' in self._param_dict.get('set_discounts_to_zero','T').upper()
+        self.default_membership_chart_string_description = self._param_dict.get(
+            'default_membership_chart_string_description','Club Membership Purchases')
+        self.default_event_chart_string_description = self._param_dict.get(
+            'default_event_chart_string_description','Event Revenue'
+        )
 
     def load_blackthorn_data(self):
         files = self.parse_report_path_to_file_list(
