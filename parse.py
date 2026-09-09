@@ -264,10 +264,12 @@ def combine_membership_reports(
 def combine_stripe_reports(
     list_of_files: list[os.PathLike]
 ):
+    stripe_df = []
     for f in list_of_files:
         try:
-            df = parse_stripe_report(f).assign(source=f)
+            stripe_df.append(parse_stripe_report(f).assign(source=f))
         except:
             pass
 
-    return df
+    stripe_df = pd.concat(stripe_df).reset_index(drop=True)
+    return stripe_df
