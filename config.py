@@ -263,8 +263,9 @@ class Config:
             )
         self._param_dict = self.raw_input['parameters']\
             .set_index('parameter')['value'].to_dict()
-        self.default_fee_chart_string = self._param_dict\
-            .get('default_fee_chart_string','<NULL>')
+        self.default_stripe_fee_chart_string = self._param_dict\
+            .get('default_stripe_fee_chart_string','<STRIPE FEE CHART STRING>')
+        self.set_discounts_to_zero = 'T' in self._param_dict.get('set_discounts_to_zero','T').upper()
 
     def load_blackthorn_data(self):
         files = self.parse_report_path_to_file_list(
@@ -310,7 +311,7 @@ class Config:
         df = self.raw_input['fee_assignment_by_event']\
             .rename(columns={'fee_chart_string':'chart_string'})
         df['chart_string'] = df['chart_string']\
-            .fillna(self.default_fee_chart_string)
+            .fillna(self.default_stripe_fee_chart_string)
         return df
 
     def load_line_item_override(self):
