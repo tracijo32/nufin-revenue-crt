@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 from parse import \
     combine_blackthorn_reports, \
     combine_membership_reports, \
@@ -59,6 +60,17 @@ class BlackthornData:
         df = df.reindex(columns=self.items.columns)
         self.items = df
 
+    def dump_data(
+        self,
+        path: os.PathLike
+    ):
+        pd.merge(
+            self.items.drop(columns=['source']),
+            self.invoices,
+            on = ['invoice_id']
+        ).sort_values(by=['invoice_id','item_id'])\
+            .to_csv(path,index=False)
+
 class MembershipData:
     def __init__(self, data_files: list[str]):
         self.data_files = data_files
@@ -88,10 +100,22 @@ class MembershipData:
 
         self.memberships = df
 
+    def dump_data(
+        self,
+        path: os.PathLike
+    ):
+        self.memberships.to_csv(path,index=False)
+
 class StripeData:
     def __init__(self, data_files: list[str]):
         self.data_files = data_files
         self.transactions = combine_stripe_reports(data_files)
+
+    def dump_data(
+        self,
+        path: os.PathLike
+    ):
+        self.transactions.to_csv(path,index=False)
 
 def complete_chart_string_mapping(
     invoice_df: pd.DataFrame,
