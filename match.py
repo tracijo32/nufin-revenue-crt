@@ -1,11 +1,14 @@
 import pandas as pd
 from rapidfuzz import fuzz
+from data import BlackthornData, MembershipData, StripeData
 
 def match_stripe_to_blackthorn(
-    stripe_df,
-    invoice_df
+    stripe_data: StripeData,
+    blackthorn_data: BlackthornData
 ):
     common = ['amount','fees','net','email','transaction_timestamp']
+    stripe_df = stripe_data.transactions
+    invoice_df = blackthorn_data.invoices
 
     trans_df = pd.merge(
         stripe_df.loc[
@@ -48,11 +51,13 @@ def match_stripe_to_blackthorn(
 
 def match_stripe_to_memberships(
     unmatched_stripe_df: pd.DataFrame,
-    mbr_df: pd.DataFrame
+    membership_data: MembershipData
 ) -> pd.DataFrame:
 
     if unmatched_stripe_df.empty:
         return pd.DataFrame()
+
+    mbr_df = membership_data.memberships
 
     start = unmatched_stripe_df['transaction_timestamp'].min().floor('D') - pd.Timedelta(days=1)
     end = unmatched_stripe_df['transaction_timestamp'].max().floor('D') + pd.Timedelta(days=2)
@@ -96,12 +101,15 @@ def match_stripe_to_memberships(
 
     return df
 
-def auto_assign_refunds(
-    stripe_df: pd.DataFrame,
-    invoice_df: pd.DataFrame,
-    item_df: pd.DataFrame,
-    cs_ovrd: pd.DataFrame
+def auto_match_refunds(
+    stripe_data: StripeData,
+    blackthorn_data: BlackthornData,
 ):
+
+    stripe_df = stripe_data.transactions
+    invoice_df = blackthorn_data.invoices
+    item_df = blackthorn_data.items
+
     refund_df = pd.merge(
         stripe_df.loc[
             stripe_df['type'].eq('Refund'),
@@ -128,54 +136,21 @@ def auto_assign_refunds(
         how='inner'
     )
 
-    cs_ovrd_item = cs_ovrd.loc[
-        cs_ovrd['item_name'].notna(),
-        ['event_name','item_name','chart_string']
-    ]
-    cs_ovrd_event = cs_ovrd.loc[
-        cs_ovrd['item_name'].isna(),
-        ['event_name','chart_string']
-    ]
-
-    df = pd.merge(
-        df,
-        cs_ovrd_event,
-        on='event_name',
-        how='left',
-        suffixes=('','_ovrd_event')
-    )
-
-    df = pd.merge(
-        df,
-        cs_ovrd_item,
-        on=['event_name','item_name'],
-        how='left',
-        suffixes=('_orig','_ovrd_item')
-    )
-
-    df['chart_string_ovrd'] = df['chart_string_ovrd_item']\
-        .fillna(df['chart_string_ovrd_event'])
-    df['chart_string_to_use'] = df['chart_string_ovrd']\
-        .fillna(df['chart_string_orig'])
-
-    df = df.drop(columns=['chart_string_ovrd_item','chart_string_ovrd_event'])
-
     df['balanced'] = df[['amount','total']].sum(axis=1).round(2).eq(0)
-
     bal = df.loc[df['balanced']]\
         .groupby(['transaction_id','wire_date','invoice_id','amount'])\
         .agg(
-            chart_string = ('chart_string_to_use','first'),
-            n = ('chart_string_to_use','nunique'),
+            chart_string = ('chart_string','first'),
+            n = ('chart_string','nunique'),
         )
-
+        
     bal.loc[bal['n'].ne(1),'chart_string'] = None
     bal = bal.drop(columns=['n'])
 
     unbal = df.groupby(['transaction_id','wire_date','invoice_id','amount'])\
         .agg(
-            chart_string = ('chart_string_to_use','first'),
-            n = ('chart_string_to_use','nunique'),
+            chart_string = ('chart_string','first'),
+            n = ('chart_string','nunique'),
         )
 
     unbal.loc[unbal['n'].ne(1),'chart_string'] = None
@@ -198,31 +173,25 @@ def auto_assign_refunds(
         on='transaction_id',
         how='left'
     )
-    
+
     return refund_df
 
-def process_refunds(
-    stripe_df,
-    invoice_df,
-    item_df,
-    cs_ovrd
+def apply_overrides_to_refunds(
+    refund_df: pd.DataFrame,
+    ovrd_df: pd.DataFrame
 ):
-    refund_auto_df = auto_assign_refunds(stripe_df,invoice_df,item_df,cs_ovrd)
-    refund_ovrd = pd.read_csv('refund_override.csv')
-
-    full_refund_df = pd.merge(
-        refund_auto_df,
-        refund_ovrd,
-        on='transaction_id',
+    df = pd.merge(
+        refund_df,
+        ovrd_df,
+        on=['transaction_id'],
         how='left',
-        suffixes=('_auto','_ovrd')
+        suffixes=('_auto','_ovrd'),
+        indicator=True
     )
 
-    full_refund_df['chart_string'] = full_refund_df['chart_string_ovrd']\
-        .fillna(full_refund_df['chart_string_auto'])
+    df['chart_string'] = df['chart_string_auto'].fillna(df['chart_string_ovrd'])\
+        .fillna('<NULL>')
+    df['amount'] = df['amount_auto'].fillna(df['amount_ovrd'])
+    df = df.reindex(columns=refund_df.columns)
 
-    full_refund_df = full_refund_df[
-        ['gateway','transaction_id','wire_date','amount','chart_string']
-    ]
-
-    return full_refund_df
+    return df
