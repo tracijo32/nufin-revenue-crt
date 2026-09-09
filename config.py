@@ -279,6 +279,13 @@ class Config:
         self.default_event_chart_string_description = self._param_dict.get(
             'default_event_chart_string_description','Event Revenue'
         )
+        self.default_refund_chart_string_description = self._param_dict.get(
+            'default_refund_chart_string_description','Refund'
+        )
+        output_path = self._param_dict.get('path_to_output','.')
+        output_path = os.path.expanduser(os.path.abspath(output_path))
+        assert os.path.isdir(output_path), f'designated output path {output_path} is not a directory'
+        self.output_path = output_path
 
     def load_blackthorn_data(self):
         files = self.parse_report_path_to_file_list(
