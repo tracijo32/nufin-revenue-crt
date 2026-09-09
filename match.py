@@ -51,6 +51,9 @@ def match_stripe_to_memberships(
     mbr_df: pd.DataFrame
 ) -> pd.DataFrame:
 
+    if unmatched_stripe_df.empty:
+        return pd.DataFrame()
+
     start = unmatched_stripe_df['transaction_timestamp'].min().floor('D') - pd.Timedelta(days=1)
     end = unmatched_stripe_df['transaction_timestamp'].max().floor('D') + pd.Timedelta(days=2)
 
