@@ -122,6 +122,7 @@ def run_pipeline(
     daily_path = os.path.join(config.output_path,'daily_reconcilation')
     os.makedirs(daily_path,exist_ok=True)
 
+    ## output the daily reconciliation files
     daily = crt_bal[['gateway','wire_date']].drop_duplicates()
     for gateway, wire_date in daily.itertuples(index=False):
         generate_daily_gateway_output_file(
