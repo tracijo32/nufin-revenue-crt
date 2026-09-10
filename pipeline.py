@@ -5,6 +5,7 @@ import match
 import aggregate as agg
 import pandas as pd
 import os
+from output import generate_daily_gateway_output_file
 
 def run_pipeline(
     config: Config
@@ -62,8 +63,16 @@ def run_pipeline(
     bt_match_df, mbr_match_df = match.match_charges(stripe_data, bt_data, mbr_data)
 
     ## dump the matched data to a csv, so you can see what it looks like matched
-    bt_match_df.to_csv(os.path.join(qc_path,'matched_blackthorn_data.csv'),index=False)
-    mbr_match_df.to_csv(os.path.join(qc_path,'matched_membership_data.csv'),index=False)
+    bt_match_df.to_csv(
+        os.path.join(qc_path,'matched_blackthorn_data.csv'),
+        index=False,
+        date_format='%m/%d/%Y'
+    )
+    mbr_match_df.to_csv(
+        os.path.join(qc_path,'matched_membership_data.csv'),
+        index=False,
+        date_format='%Y-%m-%d'
+    )
 
     #########################################################
     ### aggregate the data
@@ -79,11 +88,19 @@ def run_pipeline(
     fees_df = pd.concat([bt_fees,mbr_fees])
 
     chg_bal = agg.balance_charges(stripe_data,gross_df,fees_df)
-    chg_bal.to_csv(os.path.join(qc_path,'balanced_charges.csv'),index=False)
+    chg_bal.to_csv(
+        os.path.join(qc_path,'balanced_charges.csv'),
+        index=False,
+        date_format='%m/%d/%Y'
+    )
 
     ## balance the refunds
     ref_bal = agg.balance_refunds(stripe_data,refund_df)
-    ref_bal.to_csv(os.path.join(qc_path,'balanced_refunds.csv'),index=False)
+    ref_bal.to_csv(
+        os.path.join(qc_path,'balanced_refunds.csv'),
+        index=False,
+        date_format='%m/%d/%Y'
+    )
 
     ## aggregate the usage fees
     usage_df = agg.aggregate_usage_fees(stripe_data, config)
@@ -99,7 +116,21 @@ def run_pipeline(
     crt_lines.to_csv(os.path.join(crt_path,'crt_lines.csv'),index=False)
 
     ## balance the crt
-    crt_bal = agg.balance_crt(stripe_data, crt_lines)
+    crt_bal = agg.balance_crt(crt_lines, stripe_data)
     crt_bal.to_csv(os.path.join(qc_path,'balanced_crt.csv'),index=False)
 
-    return crt_lines, crt_bal, chg_bal, ref_bal
+    daily_path = os.path.join(config.output_path,'daily_reconcilation')
+    os.makedirs(daily_path,exist_ok=True)
+
+    daily = crt_bal[['gateway','wire_date']].drop_duplicates()
+    for gateway, wire_date in daily.itertuples(index=False):
+        generate_daily_gateway_output_file(
+            wire_date=wire_date,
+            gateway=gateway,
+            path_to_output=daily_path,
+            crt_lines=crt_lines,
+            crt_bal=crt_bal,
+            mbr_match_df=mbr_match_df,
+            bt_match_df=bt_match_df,
+            bt_data=bt_data
+        )
