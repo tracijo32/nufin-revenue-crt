@@ -150,7 +150,7 @@ def balance_charges(
 
     df['balanced'] = df['gross_diff'].eq(0) & df['fees_diff'].eq(0)
 
-    return df
+    return df.reset_index()
 
 def balance_refunds(
     stripe_data: StripeData,
@@ -174,7 +174,7 @@ def balance_refunds(
     df['amount_diff'] = df['amount_cc'].subtract(df['amount_stripe']).round(2)
     df['balanced'] = df['amount_diff'].eq(0)
 
-    return df
+    return df.reset_index()
 
 def get_crt_lines(
     gross_df: pd.DataFrame,
@@ -188,11 +188,11 @@ def get_crt_lines(
 
     df = pd.concat([
         gross_df.rename(columns={'gross':'amount'})\
-            .reindex(columns=cols),
+            .reindex(columns=cols).assign(type='Gross'),
         fees_df.rename(columns={'fees':'amount'})\
-            .reindex(columns=cols),
-        usage_df.reindex(columns=cols),
-        refund_df.reindex(columns=cols)
+            .reindex(columns=cols).assign(type='Transaction Fees'),
+        usage_df.reindex(columns=cols).assign(type='Billing Fees'),
+        refund_df.reindex(columns=cols).assign(type='Refund')
     ])
 
     df['description'] = df['description'].fillna(
@@ -200,37 +200,52 @@ def get_crt_lines(
             .transform('first')
     ).fillna(config.default_refund_chart_string_description)
 
-    crt_lines = df.groupby(['gateway','wire_date','chart_string','description'])\
+    crt_lines = df.groupby([
+        'gateway','wire_date','chart_string','description','type'])\
         ['amount'].sum().reset_index()
 
     return crt_lines
 
 def balance_crt(
-    stripe_data: StripeData,
-    crt_lines: pd.DataFrame
+    crt_lines: pd.DataFrame,
+    stripe_data: StripeData
 ) -> pd.DataFrame:
 
-    df = stripe_data.transactions
-    df['transaction_date'] = pd.to_datetime(df['transaction_timestamp']).dt.date
-    df.loc[df['type'].ne('Charge'),'transaction_date'] = None
+    stripe_df = stripe_data.transactions[
+    ['gateway','wire_date','type','amount','fees','net']
+]
+    stripe_df['fees'] = -stripe_df['fees'].abs()
 
-    stripe_net = df.groupby(['gateway','wire_date']).agg(
-        transaction_dates = pd.NamedAgg('transaction_date',lambda x: sorted(x.dropna().unique())),
-        net_amount = pd.NamedAgg('net','sum')
+    stripe_df = pd.melt(stripe_df,
+        id_vars=['gateway','wire_date','type'],
+        value_vars=['amount','fees','net'],
     )
+    stripe_df['type'] = stripe_df.apply(
+        lambda x: 'Net' if x['variable'] == 'net'
+        else 'Gross' if x['type'] == 'Charge' and x['variable'] == 'amount'
+        else 'Transaction Fees' if x['type'] == 'Charge' and x['variable'] == 'fees'
+        else 'Refund' if x['type'].startswith('Refund')
+        else 'Billing Fees' if x['type'] == 'Stripe Fee'
+        else x['type'],
+        axis=1
+    ).str.strip()
+    stripe_totals = stripe_df.groupby(['gateway','wire_date','type'])['value'].sum()\
+        .reset_index().rename(columns={'value':'amount'})
 
-    crt_net = crt_lines.groupby(['gateway','wire_date'])['amount']\
-        .sum().rename('net_amount')
+    crt_totals = crt_lines.groupby(['gateway','wire_date','type'])['amount'].sum()\
+        .reset_index()
+    crt_net = crt_totals.groupby(['gateway','wire_date'])['amount'].sum()\
+        .reset_index().assign(type='Net')
+    crt_totals = pd.concat([crt_totals, crt_net])
+    df = pd.merge(
+        crt_totals,
+        stripe_totals,
+        on=['gateway','wire_date','type'],
+        how='outer',
+        suffixes=('_crt','_stripe')
+    ).fillna(0).sort_values(by=['gateway','wire_date','type'])
+    df['amount_diff'] = df['amount_crt'].subtract(df['amount_stripe']).round(2)
 
-    bal = pd.merge(
-        stripe_net,
-        crt_net,
-        left_index = True,
-        right_index = True,
-        how = 'left',
-        suffixes = ['_stripe','_crt']
-    )
-    bal['net_amount_diff'] = bal['net_amount_stripe'].subtract(bal['net_amount_crt']).round(2)
-    bal['balanced'] = bal['net_amount_diff'].eq(0)
+    return df
 
-    return bal
+    
