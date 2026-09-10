@@ -17,7 +17,7 @@ def match_stripe_to_blackthorn(
             ['transaction_id','type','wire_date','amount','fees','net',
             'gateway','email','transaction_timestamp']
         ],
-        invoice_df[['transaction_id','amount','fees','net',
+        invoice_df[['transaction_id','invoice_id','amount','fees','net',
             'gateway_name','email','transaction_timestamp']],
         on='transaction_id',
         how='left',
@@ -34,8 +34,9 @@ def match_stripe_to_blackthorn(
         bt_match_df[f'{c}_match'] = bt_match_df[f'{c}_stripe'].eq(trans_df[f'{c}_blackthorn'])
         col_order.extend([f'{c}_stripe',f'{c}_blackthorn',f'{c}_match'])
 
+    match_cols = [c for c in col_order if c.endswith('_match')]
+    bt_match_df['match_score'] = bt_match_df[match_cols].mean(axis=1)
     col_order = [c for c in bt_match_df.columns if c not in col_order] + col_order
-
     blackthorn_match_df = bt_match_df[col_order]
 
     unmatched_stripe_df = pd.merge(
