@@ -301,14 +301,14 @@ class Config:
             self._param_dict['path_to_blackthorn'],
             file_glob='*.xlsx'
         )
-        return BlackthornData(files)
+        return BlackthornData().load_from_files(files)
 
     def load_membership_data(self):
         files = self.parse_report_path_to_file_list(
             self._param_dict['path_to_membership'],
             file_glob='*.xlsx'
         )
-        return MembershipData(files)
+        return MembershipData().load_from_files(files)
 
     def load_stripe_data(self):
         gateways = self._param_dict.get('gateways_to_process','ARD')\
@@ -322,7 +322,7 @@ class Config:
             file_glob='*.csv',
             file_regex=file_regex
         )
-        return StripeData(files)
+        return StripeData().load_from_files(files)
 
     def load_chart_string_descriptions(self):
         df = self.raw_input['chart_string_override']
