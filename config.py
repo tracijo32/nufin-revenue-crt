@@ -118,123 +118,6 @@ class ConfigFileLoadException(Exception):
 class ConfigFileValidationException(Exception):
     pass
 
-def load_input_frame(
-    path_to_input_file: os.PathLike,
-    sheet_name: str,
-    **kwargs
-):
-    if os.path.isdir(path_to_input_file):
-        path_to_input_file = os.path.join(path_to_input_file, f'{sheet_name}.csv')
-        if not os.path.exists(path_to_input_file):
-            raise FileNotFoundError(f'{path_to_input_file} does not exist')
-
-    extension = os.path.splitext(path_to_input_file)[1]
-    if extension == '.csv':
-        return pd.read_csv(path_to_input_file, **kwargs)
-    elif extension == '.xlsx':
-        return pd.read_excel(path_to_input_file, sheet_name=sheet_name, **kwargs)
-    else:
-        raise ValueError(f'unsupported file extension: {extension}')
-
-def validate_input_frame(
-    df: pd.DataFrame,
-    cols_not_null: list[str] = [],
-    cols_unique: list[str] = [],
-    multi_index_cols: list[tuple[str, ...]] = []
-):
-    ## Drop rows that are completely null
-    ## sometimes Excel adds blank rows when it edits CSVs
-    df = df[~df.isnull().all(axis=1)]
-
-    for col in cols_not_null:
-        if df[col].isnull().any():
-            raise ValueError(f'{col} contains null values')
-
-    for col in cols_unique:
-        if df[col].duplicated().any():
-            raise ValueError(f'{col} contains duplicate values')
-
-    for col_tuple in multi_index_cols:
-        if df[col_tuple].duplicated().any():
-            col_tuple_str = ', '.join(col_tuple)
-            raise ValueError(f'{col_tuple_str} contains duplicate values')
-
-    return df
-
-def generate_empty_input_frame(
-    columns: list[str],
-    dtypes: dict[str, type]
-):
-    return pd.DataFrame(columns=columns).astype(dtypes)
-
-def _get_input_frame_columns(
-    sheet_name: str,
-):
-    return list(CONFIG_INPUT_FRAMES[sheet_name]['columns'].keys())
-
-def _get_input_frame_dtypes(
-    sheet_name: str,
-):
-    return {
-        col: CONFIG_INPUT_FRAMES[sheet_name]['columns'][col].get('dtype', str)
-        for col in _get_input_frame_columns(sheet_name)
-    }
-
-def _get_input_frame_columns_by_null_status(
-    sheet_name: str,
-    nullable: bool = False
-):
-    return [
-        col for col in _get_input_frame_columns(sheet_name)
-        if CONFIG_INPUT_FRAMES[sheet_name]['columns'][col].get('nullable', True) == nullable
-    ]
-
-def _get_input_frame_columns_by_unique_status(
-    sheet_name: str,
-    unique: bool = False
-):
-    return [
-        col for col in _get_input_frame_columns(sheet_name)
-        if CONFIG_INPUT_FRAMES[sheet_name]['columns'][col].get('unique', False) == unique
-    ]
-
-def _get_input_frame_multi_index_columns(
-    sheet_name: str,
-):
-    return CONFIG_INPUT_FRAMES[sheet_name].get('multi_index_columns', [])
-
-def load_and_validate_input_frame(
-    path_to_input_file: os.PathLike,
-    sheet_name: str
-):
-    cols = _get_input_frame_columns(sheet_name)
-    dtypes = _get_input_frame_dtypes(sheet_name)
-    not_null_cols = _get_input_frame_columns_by_null_status(sheet_name, nullable=False)
-    uniq_cols = _get_input_frame_columns_by_unique_status(sheet_name, unique=True)
-    multi_index_cols = _get_input_frame_multi_index_columns(sheet_name)
-
-    try:
-        df = load_input_frame(
-            path_to_input_file=path_to_input_file,
-            sheet_name=sheet_name,
-            usecols=cols,
-            dtype=dtypes
-        )
-    except Exception as e:
-        raise ConfigFileLoadException(f"Error loading {sheet_name} input frame: {e}")
-    
-    try:
-        df = validate_input_frame(
-            df,
-            cols_not_null = not_null_cols,
-            cols_unique = uniq_cols,
-            multi_index_cols = multi_index_cols
-        )
-    except Exception as e:
-        raise ConfigFileValidationException(f"Error validating {sheet_name} input frame: {e}")
-    
-    return df
-
 class Config:
     @staticmethod
     def parse_report_path_to_file_list(
@@ -265,7 +148,7 @@ class Config:
     def __init__(self, config_path: os.PathLike):
         self.raw_input = {}
         for key in CONFIG_INPUT_FRAMES.keys():
-            self.raw_input[key] = load_and_validate_input_frame(
+            self.raw_input[key] = self.load_and_validate_input_frame(
                 path_to_input_file=config_path,
                 sheet_name=key
             )
@@ -286,6 +169,132 @@ class Config:
         output_path = os.path.expanduser(os.path.abspath(output_path))
         assert os.path.isdir(output_path), f'designated output path {output_path} is not a directory'
         self.output_path = output_path
+
+    @staticmethod
+    def _get_input_frame_columns(
+        sheet_name: str,
+    ):
+        return list(CONFIG_INPUT_FRAMES[sheet_name]['columns'].keys())
+
+    @staticmethod
+    def _get_input_frame_dtypes(
+        sheet_name: str,
+    ):
+        return {
+            col: data.get('dtype', str)
+            for col, data in CONFIG_INPUT_FRAMES[sheet_name]['columns'].items()
+        }
+
+    @staticmethod
+    def _get_input_frame_columns_by_null_status(
+        sheet_name: str,
+        nullable: bool = False
+    ):
+        return [
+            col for col, data in CONFIG_INPUT_FRAMES[sheet_name]['columns'].items()
+            if data.get('nullable', True) == nullable
+        ]
+
+    @staticmethod
+    def _get_input_frame_columns_by_unique_status(
+        sheet_name: str,
+        unique: bool = False
+    ):
+        return [
+            col for col, data in CONFIG_INPUT_FRAMES[sheet_name]['columns'].items()
+            if data.get('unique', False) == unique
+        ]
+
+    @staticmethod
+    def _get_input_frame_multi_index_columns(
+        sheet_name: str,
+    ):
+        return CONFIG_INPUT_FRAMES[sheet_name].get('multi_index_columns', [])
+
+    def load_and_validate_input_frame(
+        self,
+        path_to_input_file: os.PathLike,
+        sheet_name: str
+    ):
+        cols = self._get_input_frame_columns(sheet_name)
+        dtypes = self._get_input_frame_dtypes(sheet_name)
+        not_null_cols = self._get_input_frame_columns_by_null_status(sheet_name, nullable=False)
+        uniq_cols = self._get_input_frame_columns_by_unique_status(sheet_name, unique=True)
+        multi_index_cols = self._get_input_frame_multi_index_columns(sheet_name)
+
+        try:
+            df = self.load_input_frame(
+                path_to_input_file=path_to_input_file,
+                sheet_name=sheet_name,
+                usecols=cols,
+                dtype=dtypes
+            )
+        except Exception as e:
+            raise ConfigFileLoadException(f"Error loading {sheet_name} input frame: {e}")
+        
+        try:
+            df = self.validate_input_frame(
+                df,
+                cols_not_null = not_null_cols,
+                cols_unique = uniq_cols,
+                multi_index_cols = multi_index_cols
+            )
+        except Exception as e:
+            raise ConfigFileValidationException(f"Error validating {sheet_name} input frame: {e}")
+        
+        return df
+
+    @staticmethod
+    def load_input_frame(
+        path_to_input_file: os.PathLike,
+        sheet_name: str,
+        **kwargs
+    ):
+        if os.path.isdir(path_to_input_file):
+            path_to_input_file = os.path.join(path_to_input_file, f'{sheet_name}.csv')
+            if not os.path.exists(path_to_input_file):
+                raise FileNotFoundError(f'{path_to_input_file} does not exist')
+
+        extension = os.path.splitext(path_to_input_file)[1]
+        if extension == '.csv':
+            return pd.read_csv(path_to_input_file, **kwargs)
+        elif extension == '.xlsx':
+            return pd.read_excel(path_to_input_file, sheet_name=sheet_name, **kwargs)
+        else:
+            raise ValueError(f'unsupported file extension: {extension}')
+
+    @staticmethod
+    def validate_input_frame(
+        df: pd.DataFrame,
+        cols_not_null: list[str] = [],
+        cols_unique: list[str] = [],
+        multi_index_cols: list[tuple[str, ...]] = []
+    ):
+        ## Drop rows that are completely null
+        ## sometimes Excel adds blank rows when it edits CSVs
+        df = df[~df.isnull().all(axis=1)]
+
+        for col in cols_not_null:
+            if df[col].isnull().any():
+                raise ValueError(f'{col} contains null values')
+
+        for col in cols_unique:
+            if df[col].duplicated().any():
+                raise ValueError(f'{col} contains duplicate values')
+
+        for col_tuple in multi_index_cols:
+            if df[col_tuple].duplicated().any():
+                col_tuple_str = ', '.join(col_tuple)
+                raise ValueError(f'{col_tuple_str} contains duplicate values')
+
+        return df
+
+    @staticmethod
+    def generate_empty_input_frame(
+        columns: list[str],
+        dtypes: dict[str, type]
+    ):
+        return pd.DataFrame(columns=columns).astype(dtypes)
 
     def load_blackthorn_data(self):
         files = self.parse_report_path_to_file_list(
