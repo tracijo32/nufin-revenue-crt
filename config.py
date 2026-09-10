@@ -133,6 +133,48 @@ class ConfigFileValidationException(Exception):
     pass
 
 class Config:
+    def __init__(self, config_path: os.PathLike):
+        try:
+            self.config_path = self.validate_dir_path(config_path)
+        except Exception as e:
+            raise ConfigFileLoadException(f'Config path error: {e}')
+
+        self.raw_input = {}
+        for key in CONFIG_INPUT_FRAMES.keys():
+            self.raw_input[key] = self.load_and_validate_input_frame(
+                path_to_input_file=os.path.join(self.config_path,'input'),
+                sheet_name=key
+            )
+        self._param_dict = self.raw_input['parameters']\
+            .set_index('parameter')['value'].to_dict()
+        self.default_stripe_fee_chart_string = self._param_dict\
+            .get('default_stripe_fee_chart_string','<STRIPE FEE CHART STRING>')
+        self.set_discounts_to_zero = 'T' in self._param_dict.get('set_discounts_to_zero','T').upper()
+        self.default_membership_chart_string_description = self._param_dict.get(
+            'default_membership_chart_string_description','Club Membership Purchases')
+        self.default_event_chart_string_description = self._param_dict.get(
+            'default_event_chart_string_description','Event Revenue'
+        )
+        self.default_refund_chart_string_description = self._param_dict.get(
+            'default_refund_chart_string_description','Refund'
+        )
+        output_path = self._param_dict.get('path_to_output','.')
+        output_path = os.path.expanduser(os.path.abspath(output_path))
+        assert os.path.isdir(output_path), f'designated output path {output_path} is not a directory'
+        self.output_path = output_path
+
+    @staticmethod
+    def validate_dir_path(
+        path: os.PathLike,
+    ):
+        path = os.path.expanduser(os.path.abspath(path))
+        if not os.path.exists(path):
+            raise FileNotFoundError(f'{path} does not exist')
+        if not os.path.isdir(path):
+            raise NotADirectoryError(f'{path} is not a directory')
+
+        return path
+
     @staticmethod
     def parse_report_path_to_file_list(
         path: os.PathLike,
@@ -158,31 +200,6 @@ class Config:
                 raise FileNotFoundError(f'No files found in {path} matching {file_regex}')
 
         return file_list
-
-    def __init__(self, config_path: os.PathLike):
-        self.raw_input = {}
-        for key in CONFIG_INPUT_FRAMES.keys():
-            self.raw_input[key] = self.load_and_validate_input_frame(
-                path_to_input_file=config_path,
-                sheet_name=key
-            )
-        self._param_dict = self.raw_input['parameters']\
-            .set_index('parameter')['value'].to_dict()
-        self.default_stripe_fee_chart_string = self._param_dict\
-            .get('default_stripe_fee_chart_string','<STRIPE FEE CHART STRING>')
-        self.set_discounts_to_zero = 'T' in self._param_dict.get('set_discounts_to_zero','T').upper()
-        self.default_membership_chart_string_description = self._param_dict.get(
-            'default_membership_chart_string_description','Club Membership Purchases')
-        self.default_event_chart_string_description = self._param_dict.get(
-            'default_event_chart_string_description','Event Revenue'
-        )
-        self.default_refund_chart_string_description = self._param_dict.get(
-            'default_refund_chart_string_description','Refund'
-        )
-        output_path = self._param_dict.get('path_to_output','.')
-        output_path = os.path.expanduser(os.path.abspath(output_path))
-        assert os.path.isdir(output_path), f'designated output path {output_path} is not a directory'
-        self.output_path = output_path
 
     @staticmethod
     def _get_input_frame_columns(
@@ -312,14 +329,14 @@ class Config:
 
     def load_blackthorn_data(self):
         files = self.parse_report_path_to_file_list(
-            self._param_dict['path_to_blackthorn'],
+            os.path.join(self.config_path,'reports','blackthorn'),
             file_glob='*.xlsx'
         )
         return BlackthornData().load_from_files(files)
 
     def load_membership_data(self):
         files = self.parse_report_path_to_file_list(
-            self._param_dict['path_to_membership'],
+            os.path.join(self.config_path,'reports','membership'),
             file_glob='*.xlsx'
         )
         return MembershipData().load_from_files(files)
@@ -332,7 +349,7 @@ class Config:
             rf'^({prefix_pat})\s+(\d{{2}}\.\d{{2}}\.\d{{2}})\.csv$'
         )
         files = self.parse_report_path_to_file_list(
-            self._param_dict['path_to_stripe'],
+            os.path.join(self.config_path,'reports','stripe'),
             file_glob='*.csv',
             file_regex=file_regex
         )
