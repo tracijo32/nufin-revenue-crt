@@ -6,11 +6,18 @@ from parse import \
     combine_stripe_reports
 
 class BlackthornData:
-    def __init__(self, data_files: list[str]):
+    def __init__(self):
+        self.data_files = []
+        self.invoices = None
+        self.items = None
+        self.coverage = None
+
+    def load_from_files(self, data_files: list[str]):
         self.data_files = data_files
         self.invoices, \
         self.items,\
         self.coverage = combine_blackthorn_reports(data_files)
+        return self
     
     def apply_chart_string_overrides(
         self,
@@ -60,22 +67,34 @@ class BlackthornData:
         df = df.reindex(columns=self.items.columns)
         self.items = df
 
+    def get_merged_data(self):
+        df = pd.merge(
+            self.invoices.drop(columns=['source']),
+            self.items,
+            on='invoice_id'
+        ).sort_values(by=['invoice_id','item_id'])
+        df['transaction_timestamp'] = pd.to_datetime(df['transaction_timestamp'])\
+            .dt.strftime('%m/%d/%Y %I:%M %p %Z')
+
+        return df
+
     def dump_data(
         self,
         path: os.PathLike
     ):
-        pd.merge(
-            self.items.drop(columns=['source']),
-            self.invoices,
-            on = ['invoice_id']
-        ).sort_values(by=['invoice_id','item_id'])\
-            .to_csv(path,index=False)
+        self.get_merged_data().to_csv(path,index=False)
 
 class MembershipData:
-    def __init__(self, data_files: list[str]):
+    def __init__(self):
+        self.data_files = []
+        self.memberships = None
+        self.coverage = None
+
+    def load_from_files(self, data_files: list[str]):
         self.data_files = data_files
         self.memberships, \
             self.coverage = combine_membership_reports(data_files)
+        return self
 
     def apply_chart_string_overrides(
         self,
@@ -107,9 +126,14 @@ class MembershipData:
         self.memberships.to_csv(path,index=False)
 
 class StripeData:
-    def __init__(self, data_files: list[str]):
+    def __init__(self):
+        self.data_files = []
+        self.transactions = None
+
+    def load_from_files(self, data_files: list[str]):
         self.data_files = data_files
         self.transactions = combine_stripe_reports(data_files)
+        return self
 
     def dump_data(
         self,
