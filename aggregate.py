@@ -50,13 +50,23 @@ def aggregate_blackthorn(
         ['gross'].sum().abs()\
             .reset_index()
 
-    chart_string_desc = config.load_chart_string_descriptions()
-    gross['desc1'] = gross['chart_string'].map(chart_string_desc)
-    gross['desc2'] = gross['assignment'].apply(
-        lambda x: f'Event Revenue - {x}'
-    )
-    gross['description'] = gross['desc1'].fillna(gross['desc2'])
-    gross = gross.drop(columns=['desc1','desc2','assignment'])
+    cs_desc = config.load_chart_string_descriptions()
+    cs_pfx = config.load_chart_string_prefix()
+
+    gross['desc1'] = gross['chart_string'].map(cs_desc)
+
+    for csp,desc in cs_pfx.items():
+        gross.loc[
+            gross['chart_string']\
+                .str.strip()\
+                    .str.replace(' ','-')\
+                    .str.startswith(csp),
+            'desc2'
+        ] = desc + ' - Event Revenue'
+
+    gross['description'] = gross['desc1'].fillna(gross['desc2'])\
+        .fillna('<NULL>')
+    gross = gross.drop(columns=['desc1','desc2'])
 
     return gross, fees
 
@@ -66,7 +76,6 @@ def aggregate_memberships(
 ):
     default_fee_chart_string = config.default_stripe_fee_chart_string
     fee_assign = config.load_fee_assignment_by_event()
-    chart_string_desc = config.load_chart_string_descriptions()
 
     fees = pd.merge(
         matched_memberships_df[[
@@ -95,10 +104,26 @@ def aggregate_memberships(
         .groupby(['gateway','wire_date','chart_string'])['gross'].sum().abs()\
             .reset_index()
 
-    chart_string_desc = config.load_chart_string_descriptions()
-    default_cs_desc = config.default_membership_chart_string_description
-    gross['description'] = gross['chart_string'].map(chart_string_desc)\
-        .fillna(default_cs_desc)
+    cs_desc = config.load_chart_string_descriptions()
+    cs_pfx = config.load_chart_string_prefix()
+
+    cs_desc = config.load_chart_string_descriptions()
+    cs_pfx = config.load_chart_string_prefix()
+
+    gross['desc1'] = gross['chart_string'].map(cs_desc)
+
+    for csp,desc in cs_pfx.items():
+        gross.loc[
+            gross['chart_string']\
+                .str.strip()\
+                    .str.replace(' ','-')\
+                    .str.startswith(csp),
+            'desc2'
+        ] = desc + ' - Club Memberships'
+
+    gross['description'] = gross['desc1'].fillna(gross['desc2'])\
+        .fillna('<NULL>')
+    gross = gross.drop(columns=['desc1','desc2'])
 
     return gross, fees
 

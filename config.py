@@ -109,6 +109,20 @@ CONFIG_INPUT_FRAMES = {
                 'nullable': True
             }
         }
+    },
+    'chart_string_prefix': {
+        'columns': {
+            'chart_string_prefix': {
+                'dtype': str,
+                'unique': True,
+                'nullable': False
+            },
+            'description_prefix': {
+                'dtype': str,
+                'unique': True,
+                'nullable': False
+            }
+        }
     }
 }
 
@@ -348,3 +362,7 @@ class Config:
 
     def load_refund_override(self):
         return self.raw_input['refund_override']
+
+    def load_chart_string_prefix(self):
+        return self.raw_input['chart_string_prefix']\
+            .set_index('chart_string_prefix')['description_prefix'].to_dict()
