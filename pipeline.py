@@ -1,6 +1,5 @@
 from config import Config
-from data import complete_chart_string_mapping, \
-    BlackthornData, MembershipData, StripeData
+from data import BlackthornData, MembershipData, StripeData
 import match
 import aggregate as agg
 import pandas as pd
@@ -28,12 +27,10 @@ def run_pipeline(
     #########################################################
 
     ## load in the chart string mapping and apply it to the data
-    cs_map_df = config.load_chart_string_mapping()
-    full_cs_map_df = complete_chart_string_mapping(
-        bt_data.invoices,
-        bt_data.items,
-        mbr_data.memberships,
-        cs_map_df
+    full_cs_map_df = match.complete_chart_string_mapping(
+        blackthorn_data=bt_data,
+        membership_data=mbr_data,
+        config=config
     )
     bt_data.apply_chart_string_overrides(full_cs_map_df)
     mbr_data.apply_chart_string_overrides(full_cs_map_df)

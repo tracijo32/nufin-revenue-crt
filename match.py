@@ -3,6 +3,100 @@ from rapidfuzz import fuzz
 from data import BlackthornData, MembershipData, StripeData
 from config import Config
 
+def complete_chart_string_mapping(
+    blackthorn_data: BlackthornData,
+    membership_data: MembershipData,
+    config: Config
+):
+    invoice_df = blackthorn_data.invoices
+    item_df = blackthorn_data.items
+    mbr_df = membership_data.memberships
+    cs_map_df = config.load_chart_string_mapping()
+       ## pull in event,item,cs combos from invoices
+    df1 = pd.merge(
+        item_df[['invoice_id','chart_string','item_name']],
+        invoice_df[['invoice_id','event_name']],
+        on='invoice_id'
+    ).drop(columns=['invoice_id'])\
+        .drop_duplicates().fillna('<NULL>')
+
+    ## pull in event,item,cs combos from membership
+    df2 = mbr_df[['chart_string','event_name','item_name']]\
+        .drop_duplicates().fillna('<NULL>')
+
+    ## combine the two dataframes
+    df = pd.concat([df1,df2]).drop_duplicates()
+
+    ## filter to only include combos that are in the chart string mapping
+    df = df[
+        df['chart_string'].isin(cs_map_df['chart_string'].dropna()) |
+        df['event_name'].isin(cs_map_df['event_name'].dropna()) |
+        df['item_name'].isin(cs_map_df['item_name'].dropna())
+    ]
+
+    ## generate all possible combinations of the columns
+    from itertools import combinations
+    cols = ['chart_string','event_name','item_name']
+    combos = [
+        [*combo] 
+        for n in range(1,len(cols)+1)[::-1]
+        for combo in combinations(cols,n)
+    ]
+
+    ## iterate through each combination of the match columns,
+    ## starting with the most specific and working up to the least specific
+    ## join the mapped rows to the chart string mapping
+    ## add the mapped rows to the full chart string mapping
+    full_cs_map_df = []
+    for combo in combos:
+        mapped_df, df, cs_map_df = join_map(
+            df,
+            cs_map_df,
+            combo
+        )
+        full_cs_map_df.append(mapped_df)
+    full_cs_map_df = pd.concat(full_cs_map_df)\
+        .reset_index(drop=True)
+
+    ## restore the original null values
+    for col in cols:
+        full_cs_map_df.loc[
+            full_cs_map_df[col].eq('<NULL>'),
+            col
+        ] = None
+    return full_cs_map_df
+
+def join_map(
+    to_map_df: pd.DataFrame,
+    map_df: pd.DataFrame,
+    join_cols: list[str]
+):
+    ## select only rows that have just the join columns
+    join_df = map_df.loc[
+        map_df[join_cols].notna().all(axis=1),
+        ['new_chart_string']+join_cols
+    ]
+    ## select only rows that have any of the join columns
+    not_join_df = map_df.loc[
+        map_df[join_cols].isna().any(axis=1)
+    ]
+    assert len(not_join_df) + len(join_df) == len(map_df)
+
+    df = pd.merge(
+        to_map_df,
+        join_df,
+        on=join_cols,
+        how='left',
+        indicator=True
+    )
+    mapped_df = df.loc[df['_merge'].eq('both')]\
+        .reindex(columns=map_df.columns)
+    remaining_df = df.loc[df['_merge'].ne('both')]\
+        .reindex(columns=to_map_df.columns)\
+            .drop_duplicates()
+
+    return mapped_df, remaining_df, not_join_df
+
 def match_stripe_to_blackthorn(
     stripe_data: StripeData,
     blackthorn_data: BlackthornData
