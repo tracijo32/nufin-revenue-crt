@@ -331,11 +331,8 @@ class Config:
         return MembershipData().load_from_files(files)
 
     def load_stripe_data(self):
-        gateways = self._param_dict.get('gateways_to_process','ARD')\
-            .replace(' ','').split('|')
-        prefix_pat = '|'.join(re.escape(p) for p in gateways)
         file_regex = re.compile(
-            rf'^({prefix_pat})\s+(\d{{2}}\.\d{{2}}\.\d{{2}})\.csv$'
+            r'^\S+ (\d{2}\.\d{2}\.\d{2})\.csv$'
         )
         files = self.parse_report_path_to_file_list(
             os.path.join(self.config_path,'reports','stripe'),
