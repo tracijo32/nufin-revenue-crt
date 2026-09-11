@@ -110,7 +110,7 @@ def run_pipeline(
     os.makedirs(crt_path,exist_ok=True)
 
     ## get the crt lines
-    crt_lines = agg.get_crt_lines(gross_df, fees_df, refund_df, usage_df, config)
+    crt_lines = agg.get_crt_lines(gross_df, fees_df, refund_df, usage_df)
 
     ## dump the crt lines to a csv, so you can see what it looks like
     crt_lines.to_csv(os.path.join(crt_path,'crt_lines.csv'),index=False)

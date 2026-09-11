@@ -206,7 +206,6 @@ def get_crt_lines(
     fees_df: pd.DataFrame,
     refund_df: pd.DataFrame,
     usage_df: pd.DataFrame,
-    config: Config
 ):
     
     cols = ['gateway','wire_date','chart_string','description','amount']
@@ -223,7 +222,7 @@ def get_crt_lines(
     df['description'] = df['description'].fillna(
         df.groupby(['gateway','chart_string'])['description']\
             .transform('first')
-    ).fillna(config.default_refund_chart_string_description)
+    ).fillna('<NULL>')
 
     crt_lines = df.groupby([
         'gateway','wire_date','chart_string','description','type'])\
