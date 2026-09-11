@@ -183,7 +183,7 @@ def balance_refunds(
 ):
     cc_totals = refund_df.groupby(['gateway','wire_date'])['amount'].sum()
     stripe_totals = stripe_data.transactions.loc[
-        stripe_data.transactions['type'].eq('Refund'),
+        stripe_data.transactions['type'].str.startswith('Refund'),
         ['gateway','wire_date','amount']
     ].groupby(['gateway','wire_date'])['amount'].sum()
 
@@ -269,6 +269,7 @@ def balance_crt(
         suffixes=('_crt','_stripe')
     ).fillna(0).sort_values(by=['gateway','wire_date','type'])
     df['amount_diff'] = df['amount_crt'].subtract(df['amount_stripe']).round(2)
+    df['balanced'] = df['amount_diff'].eq(0)
 
     return df
 

@@ -208,7 +208,7 @@ def auto_match_refunds(
 
     refund_df = pd.merge(
         stripe_df.loc[
-            stripe_df['type'].eq('Refund'),
+            stripe_df['type'].str.startswith('Refund'),
             ['gateway','transaction_id','wire_date','amount']
         ],
         invoice_df[['transaction_id','invoice_id','event_name']],
