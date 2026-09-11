@@ -49,24 +49,21 @@ def run_pipeline(
     #########################################################
     ### match the transactions
     #########################################################
-    qc_path = os.path.join(config.output_path,'quality_control')
-    os.makedirs(qc_path,exist_ok=True)
-
     refund_df = match.match_refunds(bt_data, stripe_data, config)
 
     ## dump the matched data to a csv, so you can see what it looks like matched
-    refund_df.to_csv(os.path.join(qc_path,'matched_refunds.csv'),index=False)
+    refund_df.to_csv(os.path.join(config.output_path,'matched_refunds.csv'),index=False)
 
     bt_match_df, mbr_match_df = match.match_charges(stripe_data, bt_data, mbr_data)
 
     ## dump the matched data to a csv, so you can see what it looks like matched
     bt_match_df.to_csv(
-        os.path.join(qc_path,'matched_blackthorn_data.csv'),
+        os.path.join(config.output_path,'matched_blackthorn.csv'),
         index=False,
         date_format='%m/%d/%Y'
     )
     mbr_match_df.to_csv(
-        os.path.join(qc_path,'matched_membership_data.csv'),
+        os.path.join(config.output_path,'matched_membership.csv'),
         index=False,
         date_format='%Y-%m-%d'
     )
@@ -86,7 +83,7 @@ def run_pipeline(
 
     chg_bal = agg.balance_charges(stripe_data,gross_df,fees_df)
     chg_bal.to_csv(
-        os.path.join(qc_path,'balanced_charges.csv'),
+        os.path.join(config.output_path,'balanced_charges.csv'),
         index=False,
         date_format='%m/%d/%Y'
     )
@@ -94,7 +91,7 @@ def run_pipeline(
     ## balance the refunds
     ref_bal = agg.balance_refunds(stripe_data,refund_df)
     ref_bal.to_csv(
-        os.path.join(qc_path,'balanced_refunds.csv'),
+        os.path.join(config.output_path,'balanced_refunds.csv'),
         index=False,
         date_format='%m/%d/%Y'
     )
@@ -103,18 +100,15 @@ def run_pipeline(
     usage_df = agg.aggregate_usage_fees(stripe_data, config)
 
     #########################################################
-    crt_path = os.path.join(config.output_path,'crt')
-    os.makedirs(crt_path,exist_ok=True)
-
     ## get the crt lines
     crt_lines = agg.get_crt_lines(gross_df, fees_df, refund_df, usage_df)
 
     ## dump the crt lines to a csv, so you can see what it looks like
-    crt_lines.to_csv(os.path.join(crt_path,'crt_lines.csv'),index=False)
+    crt_lines.to_csv(os.path.join(config.output_path,'crt_lines.csv'),index=False)
 
     ## balance the crt
     crt_bal = agg.balance_crt(crt_lines, stripe_data)
-    crt_bal.to_csv(os.path.join(qc_path,'balanced_crt.csv'),index=False)
+    crt_bal.to_csv(os.path.join(config.output_path,'balanced_crt.csv'),index=False)
 
     daily_path = os.path.join(config.output_path,'daily_reconcilation')
     os.makedirs(daily_path,exist_ok=True)
