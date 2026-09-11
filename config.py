@@ -150,18 +150,8 @@ class Config:
         self.default_stripe_fee_chart_string = self._param_dict\
             .get('default_stripe_fee_chart_string','<STRIPE FEE CHART STRING>')
         self.set_discounts_to_zero = 'T' in self._param_dict.get('set_discounts_to_zero','T').upper()
-        self.default_membership_chart_string_description = self._param_dict.get(
-            'default_membership_chart_string_description','Club Membership Purchases')
-        self.default_event_chart_string_description = self._param_dict.get(
-            'default_event_chart_string_description','Event Revenue'
-        )
-        self.default_refund_chart_string_description = self._param_dict.get(
-            'default_refund_chart_string_description','Refund'
-        )
-        output_path = self._param_dict.get('path_to_output','.')
-        output_path = os.path.expanduser(os.path.abspath(output_path))
-        assert os.path.isdir(output_path), f'designated output path {output_path} is not a directory'
-        self.output_path = output_path
+        self.output_path = os.path.join(self.config_path,'output')
+        os.makedirs(self.output_path,exist_ok=True)
 
     @staticmethod
     def validate_dir_path(
@@ -172,7 +162,6 @@ class Config:
             raise FileNotFoundError(f'{path} does not exist')
         if not os.path.isdir(path):
             raise NotADirectoryError(f'{path} is not a directory')
-
         return path
 
     @staticmethod
