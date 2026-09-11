@@ -145,6 +145,17 @@ def generate_blackthorn_item_sheet(
 
     return df
 
+def generate_refund_sheet(
+    wire_date: date,
+    gateway: str,
+    refund_df: pd.DataFrame
+):
+    df = refund_df.loc[
+        refund_df['wire_date'].eq(wire_date) &
+        refund_df['gateway'].eq(gateway)
+    ]
+    return df
+
 def generate_daily_gateway_output_file(
     wire_date: date,
     gateway: str,
@@ -153,7 +164,8 @@ def generate_daily_gateway_output_file(
     crt_bal: pd.DataFrame,
     mbr_match_df: pd.DataFrame,
     bt_match_df: pd.DataFrame,
-    bt_data: BlackthornData
+    bt_data: BlackthornData,
+    refund_df: pd.DataFrame
 ):
 
     crt_sheet = generate_crt_sheet(
@@ -187,12 +199,19 @@ def generate_daily_gateway_output_file(
         bt_match_df=bt_match_df
     )
 
+    refund_sheet = generate_refund_sheet(
+        wire_date=wire_date,
+        gateway=gateway,
+        refund_df=refund_df
+    )
+
     sheet_dict = {
         'CRT Lines': crt_sheet,
         'Stripe vs Blackthorn': bal_sheet,
         'Member Match': mbr_match_sheet,
         'Blackthorn Match': bt_match_sheet,
-        'Blackthorn Items': bt_item_sheet
+        'Blackthorn Items': bt_item_sheet,
+        'Refunds': refund_sheet
     }
 
     fn = f'{gateway}_{wire_date.strftime("%Y-%m-%d")}.xlsx'
